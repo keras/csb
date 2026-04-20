@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "csb"
+version = "0.1.0"
+description = "Run commands in an isolated container"
+requires-python = ">=3.13"
+dependencies = [
+    "pytest",
+    "pyyaml",
+]
+
+[project.scripts]
+csb = "csb:main_entry"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/csb"]
+
+[tool.pytest.ini_options]
+markers = [
+    "docker: live-container tests using Docker (select with -m docker)",
+    "podman: live-container tests using Podman (select with -m podman)",
+    "smoke: end-to-end smoke tests using whichever runtime is on PATH (select with -m smoke)",
+]
