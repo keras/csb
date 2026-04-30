@@ -190,7 +190,31 @@ def _podman_snippets(nested_podman: bool) -> dict[str, str]:
     }
 
 
-def _make_dockerfile(base_image: str, nested_podman: bool) -> str:
+def _host_run_path() -> Path | None:
+    """Return the path to the csb-host-run binary for the container arch, or None."""
+    import platform
+    bin_dir = Path(__file__).parent / "bin"
+    machine = platform.machine().lower()
+    arch = "arm64" if machine in ("arm64", "aarch64") else "amd64"
+    # prefer arch-specific binary (built by hatch hook); fall back to plain name (Makefile)
+    for name in (f"csb-host-run.{arch}", "csb-host-run"):
+        p = bin_dir / name
+        if p.exists() and not p.is_symlink():
+            return p
+        if p.is_symlink() and p.resolve().exists():
+            return p.resolve()
+    return None
+
+
+def _host_run_hash() -> str | None:
+    """Return the SHA-256 of the bundled csb-host-run binary, or None if absent."""
+    p = _host_run_path()
+    if p is None:
+        return None
+    return hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def _make_dockerfile(base_image: str, nested_podman: bool, host_run_hash: str | None = None) -> str:
     """Generate a clean Dockerfile for the given configuration."""
     packages = _apt_packages(nested_podman)
     podman = _podman_snippets(nested_podman)
@@ -226,7 +250,14 @@ RUN mkdir -p $CSB_HOME {CONTAINER_WORKDIR} /mnt/csb-home && chmod 777 {CONTAINER
 
 COPY csb/csb-persist /usr/local/bin/csb-persist
 RUN chmod +x /usr/local/bin/csb-persist
-
+"""
+    if host_run_hash:
+        out += f"""
+# csb-host-run sha256:{host_run_hash}
+COPY csb/csb-host-run /usr/local/bin/csb-host-run
+RUN chmod +x /usr/local/bin/csb-host-run
+"""
+    out += """
 # Entrypoint
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -254,7 +285,7 @@ def image_name(cfg: Config) -> str:
     addon_content = "".join(p.read_text() for p in _addon_scripts(cfg))
     digest = hashlib.sha256(
         (
-            _make_dockerfile(cfg.base_image, cfg.nested_podman)
+            _make_dockerfile(cfg.base_image, cfg.nested_podman, _host_run_hash())
             + ENTRYPOINT_SH
             + CSB_PERSIST_SH
             + addon_content
@@ -299,10 +330,11 @@ _context_files = {
 
 def _build_context_tar(cfg: Config) -> bytes:
     """Create an in-memory tar archive with the Dockerfile and entrypoint script."""
+    hrh = _host_run_hash()
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
         for name, content in {
-            "Dockerfile": _make_dockerfile(cfg.base_image, cfg.nested_podman),
+            "Dockerfile": _make_dockerfile(cfg.base_image, cfg.nested_podman, hrh),
             **_context_files,
         }.items():
             data = content.encode()
@@ -318,6 +350,14 @@ def _build_context_tar(cfg: Config) -> bytes:
         for addon_path in _addon_scripts(cfg):
             data = addon_path.read_bytes()
             info = tarfile.TarInfo(f"csb/build.d/{addon_path.name}")
+            info.size = len(data)
+            info.mode = 0o755
+            tar.addfile(info, io.BytesIO(data))
+
+        if hrh is not None:
+            bin_path = _host_run_path()
+            data = bin_path.read_bytes()
+            info = tarfile.TarInfo("csb/csb-host-run")
             info.size = len(data)
             info.mode = 0o755
             tar.addfile(info, io.BytesIO(data))
@@ -344,7 +384,11 @@ def resolve_mounts(cfg: Config) -> list[Mount]:
     return mounts
 
 
-def resolve_env(cfg: Config) -> list[tuple[str, str]]:
+def resolve_env(
+    cfg: Config,
+    broker_url: str | None = None,
+    broker_token: str | None = None,
+) -> list[tuple[str, str]]:
     """Collect environment variables to pass into the container."""
     import os
     import sys
@@ -397,6 +441,10 @@ def resolve_env(cfg: Config) -> list[tuple[str, str]]:
     for pair in cfg.env_inject:
         key, _, val = pair.partition("=")
         env.append((key, val))
+
+    if broker_url and broker_token:
+        env.append(("CSB_HOST_EXEC_URL", broker_url))
+        env.append(("CSB_HOST_EXEC_TOKEN", broker_token))
 
     return env
 

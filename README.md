@@ -10,6 +10,7 @@ Run commands in an isolated container with a persistent home.
 - `csb-persist` — promote a home directory entry to the host config overlay without restarting
 - Optional addon system (mise by default) for installing various tools
 - Optional nested Podman support
+- Optional host-exec bridge — sandbox can call whitelisted host commands via `csb-host-run`
 - Image cached by content hash — rebuilds only when config changes
 
 ## Install
@@ -49,7 +50,7 @@ csb -- python script.py  # run a command directly
 
 Run `csb --help` for the full list of flags and their defaults.
 
-**`~/.config/csb/home/`** — files symlinked into the container home on every run. Drop `.gitconfig`, `.ssh/`, `.config/mise/`, `.claude/` etc. here to have them available in every container.
+**`~/.config/csb/home/`** — files symlinked into the container home on every run. Drop `.gitconfig`, `.ssh/`, `.config/`, `.claude/` etc. here to have them available in every container.
 
 The directory is bind-mounted to `/mnt/csb-home` inside the container. At startup the entrypoint symlinks each entry into `$HOME`. Anything written to the container home that is _not_ backed by an entry here is ephemeral — it survives across runs via the named volume (`csb-home`) but is not reflected on the host.
 
@@ -66,6 +67,72 @@ csb-persist ~/.claude      # works for directories too
 
 This moves the path into `/mnt/csb-home` (which is `~/.config/csb/home/` on the host) and replaces it with a symlink. The change is visible immediately on the host and will be picked up as a symlink on the next container start.
 
+
+## Host-exec bridge
+
+The host-exec bridge lets code running inside the sandbox invoke a allowlisted set of commands on the host, with arguments passed through. This is useful for running commands that need to interact with the host environment or for leveraging host-only resources (e.g. GPU).
+
+```sh
+csb --host-exec \
+    --host-exec-allow "make run" \
+    --host-exec-allow "./cmd **" \
+    -- my-agent
+
+csb-host-run make run
+csb-host-run ./cmd "done"
+echo "hello" | csb-host-run ./cmd "cat"
+```
+
+`csb-host-run` connects over WebSocket to a host-side broker (`csb-host-broker`) that csb starts before launching the container. The broker enforces an allowlist and scrubs the environment before spawning any process — env vars injected into the sandbox (e.g. `GIT_SSH_COMMAND`) are not forwarded to the host process.
+
+### Enabling host-exec
+
+Host-exec requires the Go binaries. They are compiled at install time if Go is available; otherwise install succeeds without them and `--host-exec` will print a clear error. To build manually:
+
+```sh
+make build          # produces bin/csb-host-broker and src/csb/bin/csb-host-run
+```
+
+Enable per-invocation with `--host-exec` and specify allowed commands with one or more `--host-exec-allow` flags:
+
+```sh
+csb --host-exec \
+    --host-exec-allow "make run" \
+    --host-exec-allow "./cmd **" \
+    -- my-agent
+```
+
+Or set defaults in `~/.config/csb/config.yaml`:
+
+```yaml
+host_exec_enabled: true
+host_exec_allow:
+  - make run
+  - cmd **
+```
+
+### Allowlist pattern syntax
+
+Each rule is a string: the command name followed by zero or more argument patterns, separated by spaces.
+
+Examples:
+
+```
+open *          # open with exactly one arg (e.g. a URL)
+say **          # say with any number of args (including none)
+git status      # git status with no extra args
+git log **      # git log with any trailing args
+```
+
+`csb-host-run` exits **126** if the command is not in the allowlist, **127** if the binary is not found on the host, and propagates the actual exit code otherwise.
+
+### Security properties
+
+- The broker binds only to the container network interface (not all host interfaces) on Linux, limiting exposure to the local container bridge network.
+- Access requires a per-session 32-byte random token injected via env var — each `csb` invocation gets a fresh token.
+- The host process runs with a scrubbed environment: only `PATH`, `HOME`, `USER`, `LANG`, and `TERM` from the broker's own env are forwarded.
+- The command name itself is never wildcarded — only argument positions can use `*`/`**`.
+- Host-exec is opt-in; the default configuration does not enable it.
 
 ## Scope of isolation
 
@@ -111,7 +178,7 @@ The default addon is mise. Install tools interactively — changes persist to th
 ```sh
 csb                            # enter the sandbox
 mise use -g node@lts           # now inside
-mise use -g python claude
+mise use -g python opencode
 ```
 
 Or declare them upfront in `~/.config/csb/home/.config/mise/conf.d/tools.toml`:
@@ -120,5 +187,5 @@ Or declare them upfront in `~/.config/csb/home/.config/mise/conf.d/tools.toml`:
 [tools]
 node = "lts"
 python = "latest"
-claude = "latest"
+opencode = "latest"
 ```

@@ -11,6 +11,7 @@ tmp directory for HOME and CSB_CONFIG_DIR.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import types
@@ -22,6 +23,22 @@ import pytest
 SCRIPT = str(Path(__file__).parent.parent.parent / "csb")
 CONTAINER_HOME = "/home/sandbox"
 smoke = pytest.mark.smoke
+
+
+def _broker_available() -> bool:
+    if shutil.which("csb-host-broker"):
+        return True
+    return (Path(__file__).parent.parent.parent / "bin" / "csb-host-broker").exists()
+
+
+_requires_broker = pytest.mark.skipif(
+    not _broker_available(), reason="csb-host-broker binary not built"
+)
+
+
+def host_exec(fn):
+    """Decorator: applies pytest.mark.host_exec and skips if broker binary not built."""
+    return _requires_broker(pytest.mark.host_exec(fn))
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +207,67 @@ def test_csb_persist_promotes_to_host_overlay(smoke_env):
     r = smoke_env.run("--", "sh", "-c", "readlink ~/notes.txt")
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == "/mnt/csb-home/notes.txt"
+
+
+@smoke
+@host_exec
+def test_host_exec_echo(smoke_env):
+    """csb-host-run forwards args and returns stdout end-to-end."""
+    r = smoke_env.run(
+        "--host-exec", "--host-exec-allow", "echo **",
+        "--", "csb-host-run", "echo", "hello", "from", "host",
+    )
+    assert r.returncode == 0, r.stderr
+    assert "hello from host" in r.stdout
+
+
+@smoke
+@host_exec
+def test_host_exec_exit_code(smoke_env):
+    """Non-zero exit code propagates from the host process back through csb."""
+    r = smoke_env.run(
+        "--host-exec", "--host-exec-allow", "sh -c *",
+        "--", "csb-host-run", "sh", "-c", "exit 7",
+    )
+    assert r.returncode == 7, f"expected 7, got {r.returncode}\nstderr: {r.stderr}"
+
+
+@smoke
+@host_exec
+def test_host_exec_stdin(smoke_env):
+    """Stdin piped inside the container reaches the host process via the broker."""
+    r = smoke_env.run(
+        "--host-exec", "--host-exec-allow", "cat",
+        "--", "sh", "-c", "printf 'ping' | csb-host-run cat",
+    )
+    assert r.returncode == 0, r.stderr
+    assert "ping" in r.stdout
+
+
+@smoke
+@host_exec
+def test_host_exec_denial(smoke_env):
+    """Commands not in the allowlist are denied with exit code 126."""
+    r = smoke_env.run(
+        "--host-exec", "--host-exec-allow", "echo **",
+        "--", "csb-host-run", "date", "--iso-8601",
+    )
+    assert r.returncode == 126, f"expected 126, got {r.returncode}"
+
+
+@smoke
+@host_exec
+def test_host_exec_env_scrubbed(smoke_env):
+    """Env vars injected into the sandbox do not leak to the host process."""
+    r = smoke_env.run(
+        "--host-exec", "--host-exec-allow", "sh -c *",
+        "--env", "GIT_SSH_COMMAND=evil",
+        "--", "csb-host-run", "sh", "-c", 'echo "${GIT_SSH_COMMAND:-empty}"',
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "empty", (
+        f"GIT_SSH_COMMAND leaked to host process: {r.stdout.strip()!r}"
+    )
 
 
 @smoke

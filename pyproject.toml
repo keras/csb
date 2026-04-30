@@ -17,10 +17,15 @@ csb = "csb:main_entry"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/csb"]
+artifacts = ["src/csb/bin/*"]
+
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
 
 [tool.pytest.ini_options]
 markers = [
     "docker: live-container tests using Docker (select with -m docker)",
     "podman: live-container tests using Podman (select with -m podman)",
     "smoke: end-to-end smoke tests using whichever runtime is on PATH (select with -m smoke)",
+    "host_exec: host-exec broker smoke tests (select with -m host_exec; requires csb-host-broker built)",
 ]

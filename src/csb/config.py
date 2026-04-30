@@ -269,6 +269,33 @@ OPTIONS: list[OptionSpec] = [
         help="use host networking instead of isolated container network (default: false)",
         yaml_example="false",
     ),
+    OptionSpec(
+        name="host_exec_enabled",
+        type=bool,
+        default=False,
+        flag="--host-exec",
+        env="CSB_HOST_EXEC",
+        yaml_key=("host_exec_enabled",),
+        help="start host exec broker (allows sandbox to run whitelisted host commands)",
+        yaml_example="false",
+    ),
+    OptionSpec(
+        name="host_exec_allow",
+        type=list,
+        default=[],
+        flag="--host-exec-allow",
+        yaml_key=("host_exec_allow",),
+        help="allowed host command pattern, repeatable (e.g. \"open *\", \"git log **\")",
+        yaml_example='["open *", "git log **"]',
+    ),
+    OptionSpec(
+        name="host_exec_bind",
+        type=str,
+        default="0.0.0.0:0",
+        yaml_key=("host_exec_bind",),
+        help="host exec broker listen address (port 0 = auto-assign); must be reachable from the container",
+        yaml_example="0.0.0.0:0",
+    ),
 ]
 
 
@@ -303,6 +330,9 @@ class Config:
     env_forward: list[str] = field(default_factory=list)
     env_inject: list[str] = field(default_factory=list)
     host_network: bool = False
+    host_exec_enabled: bool = False
+    host_exec_allow: list[str] = field(default_factory=list)
+    host_exec_bind: str = "0.0.0.0:0"
 
     def __post_init__(self) -> None:
         if self.config_dir is None:
