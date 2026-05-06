@@ -8,12 +8,12 @@ import sys
 from pathlib import Path
 
 from .config import Config, Mount, _init_config_dir, parse_args
-from .container import build_run_command, image_name, resolve_env, resolve_mounts, _build_context_tar
+from .container import build_run_command, container_labels, image_name, resolve_env, resolve_mounts, volume_labels, _build_context_tar
 from .runtime import Runtime, start_host_exec
 
 
 def _clean(cfg: Config, runtime: Runtime) -> None:
-    """Remove all csb:* images and the home volume."""
+    """Remove all csb:* images and all labeled csb volumes."""
     image_ids = runtime.list_csb_image_ids()
     if image_ids:
         print(f"Removing {len(image_ids)} csb image(s)...")
@@ -21,8 +21,13 @@ def _clean(cfg: Config, runtime: Runtime) -> None:
     else:
         print("No csb images found.")
 
-    print(f"Removing home volume {cfg.home_volume}...")
-    runtime.remove_volume(cfg.home_volume)
+    volumes = runtime.list_csb_volumes()
+    # Always include the current home volume in case it predates labels.
+    if cfg.home_volume not in volumes:
+        volumes.append(cfg.home_volume)
+    for vol in volumes:
+        print(f"Removing volume {vol}...")
+        runtime.remove_volume(vol)
 
 
 def main(args) -> None:
@@ -40,6 +45,8 @@ def main(args) -> None:
 
     if cfg.rebuild or not runtime.image_exists(image_name(cfg)):
         runtime.build_image(image_name(cfg), _build_context_tar(cfg), quiet=not cfg.verbose)
+
+    runtime.ensure_volume(cfg.home_volume, volume_labels(cfg))
 
     broker_proc = None
     broker_url = None

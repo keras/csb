@@ -31,6 +31,13 @@ class FakeRuntime:
     def remove_images(self, ids: list[str]) -> None:
         self.calls.append(("remove_images", ids))
 
+    def ensure_volume(self, name: str, labels: dict) -> None:
+        self.calls.append(("ensure_volume", name, labels))
+
+    def list_csb_volumes(self) -> list[str]:
+        self.calls.append(("list_csb_volumes",))
+        return []
+
     def remove_volume(self, name: str) -> None:
         self.calls.append(("remove_volume", name))
 

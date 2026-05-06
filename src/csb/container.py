@@ -473,6 +473,23 @@ def _resolve_container_cmd(cfg: Config) -> list[str]:
     return inner
 
 
+def container_labels(cfg: Config) -> dict[str, str]:
+    """Labels applied to every csb container."""
+    return {
+        "csb.managed": "true",
+        "csb.home-volume": cfg.home_volume,
+        "csb.config-dir": str(cfg.config_dir),
+    }
+
+
+def volume_labels(cfg: Config) -> dict[str, str]:
+    """Labels applied to the csb home volume at creation time."""
+    return {
+        "csb.managed": "true",
+        "csb.config-dir": str(cfg.config_dir),
+    }
+
+
 def build_run_command(
     cfg: Config, mounts: list[Mount], env: list[tuple[str, str]]
 ) -> list[str]:
@@ -481,6 +498,8 @@ def build_run_command(
     if cfg.use_tty:
         cmd.append("-t")
     cmd.append("--rm")
+    for k, v in container_labels(cfg).items():
+        cmd.extend(["--label", f"{k}={v}"])
     if cfg.nested_podman:
         # Required for rootless Podman inside the container:
         #   /dev/fuse          — fuse-overlayfs storage driver

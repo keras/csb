@@ -45,6 +45,36 @@ class Runtime:
     def remove_images(self, ids: list[str]) -> None:
         subprocess.run([self.cli, "rmi", "-f", *ids], check=False)
 
+    def ensure_volume(self, name: str, labels: dict[str, str]) -> None:
+        """Create the named volume with labels if it does not already exist.
+
+        Volume labels can only be set at creation time, so we skip creation
+        when the volume already exists rather than recreating it.
+        """
+        exists = subprocess.run(
+            [self.cli, "volume", "inspect", name],
+            capture_output=True,
+        ).returncode == 0
+        if exists:
+            return
+        label_args: list[str] = []
+        for k, v in labels.items():
+            label_args += ["--label", f"{k}={v}"]
+        subprocess.run(
+            [self.cli, "volume", "create", *label_args, name],
+            check=True,
+            capture_output=True,
+        )
+
+    def list_csb_volumes(self) -> list[str]:
+        """Return names of all volumes carrying the csb.managed=true label."""
+        result = subprocess.run(
+            [self.cli, "volume", "ls", "--filter", "label=csb.managed=true", "--format", "{{.Name}}"],
+            capture_output=True,
+            text=True,
+        )
+        return [n for n in result.stdout.splitlines() if n] if result.returncode == 0 else []
+
     def remove_volume(self, name: str) -> None:
         subprocess.run(
             [self.cli, "volume", "rm", "-f", name],
