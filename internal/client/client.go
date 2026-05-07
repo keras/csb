@@ -6,11 +6,13 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"sync"
 	"syscall"
 
 	"csb-host/internal/proto"
 	"nhooyr.io/websocket"
+	"golang.org/x/term"
 )
 
 // Run connects to the broker, sends cmd+args, wires stdio, and returns the exit code.
@@ -46,13 +48,36 @@ func Run(
 		return conn.Write(ctx, websocket.MessageText, data)
 	}
 
-	if err := sendLocked(proto.NewStart(cmd, args)); err != nil {
+	// Detect if stdin is a real terminal and set up TTY mode.
+	var startFrame proto.Frame
+	stdinFd := -1
+	if f, ok := stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		stdinFd = int(f.Fd())
+	}
+
+	if stdinFd >= 0 {
+		cols, rows, err := term.GetSize(stdinFd)
+		if err != nil || cols == 0 || rows == 0 {
+			cols, rows = 80, 24
+		}
+		startFrame = proto.NewStartTTY(cmd, args, uint16(cols), uint16(rows))
+	} else {
+		startFrame = proto.NewStart(cmd, args)
+	}
+
+	if err := sendLocked(startFrame); err != nil {
 		return 1, fmt.Errorf("send start: %w", err)
 	}
 
-	// stdin pump: read from stdin, send stdin frames; empty data = EOF.
-	// Guards each send with a non-blocking done check so writes don't race
-	// with conn.Close in the main loop below.
+	// Put local terminal in raw mode so the host PTY drives it.
+	if stdinFd >= 0 {
+		oldState, err := term.MakeRaw(stdinFd)
+		if err == nil {
+			defer term.Restore(stdinFd, oldState)
+		}
+	}
+
+	// stdin pump
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -78,20 +103,44 @@ func Run(
 		}
 	}()
 
-	// signal pump: forward SIGINT/SIGTERM to the host process
+	// signal pump: forward SIGINT/SIGTERM; handle SIGWINCH for TTY resize
 	if signals != nil {
 		go func() {
 			for sig := range signals {
-				var name string
 				switch sig {
 				case syscall.SIGINT:
-					name = "SIGINT"
+					sendLocked(proto.NewSignal("SIGINT"))
 				case syscall.SIGTERM:
-					name = "SIGTERM"
-				default:
-					continue
+					sendLocked(proto.NewSignal("SIGTERM"))
+				case syscall.SIGWINCH:
+					if stdinFd < 0 {
+						continue
+					}
+					cols, rows, err := term.GetSize(stdinFd)
+					if err == nil && cols > 0 && rows > 0 {
+						sendLocked(proto.NewResize(uint16(cols), uint16(rows)))
+					}
 				}
-				sendLocked(proto.NewSignal(name))
+			}
+		}()
+	}
+
+	// If TTY mode, also watch SIGWINCH independently in case the caller didn't subscribe.
+	if stdinFd >= 0 {
+		winchC := make(chan os.Signal, 1)
+		signal.Notify(winchC, syscall.SIGWINCH)
+		go func() {
+			defer signal.Stop(winchC)
+			for {
+				select {
+				case <-done:
+					return
+				case <-winchC:
+					cols, rows, err := term.GetSize(stdinFd)
+					if err == nil && cols > 0 && rows > 0 {
+						sendLocked(proto.NewResize(uint16(cols), uint16(rows)))
+					}
+				}
 			}
 		}()
 	}

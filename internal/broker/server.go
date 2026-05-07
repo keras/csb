@@ -6,6 +6,7 @@ import (
 
 	"csb-host/internal/allowlist"
 	"csb-host/internal/proto"
+
 	"nhooyr.io/websocket"
 )
 
@@ -59,7 +60,13 @@ func (s *Server) handle(conn *websocket.Conn, r *http.Request) {
 		return
 	}
 
-	runCommand(ctx, cancel, conn, f.Cmd, f.Args)
+	runCommand(ctx, cancel, conn, startFrame{
+		cmd:  f.Cmd,
+		args: f.Args,
+		tty:  f.Tty,
+		cols: f.Cols,
+		rows: f.Rows,
+	})
 }
 
 func sendFrame(ctx context.Context, conn *websocket.Conn, f proto.Frame) {

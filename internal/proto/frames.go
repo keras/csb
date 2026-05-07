@@ -13,10 +13,21 @@ type Frame struct {
 	ErrCode  string   `json:"err_code,omitempty"`
 	Message  string   `json:"message,omitempty"`
 	Name     string   `json:"name,omitempty"` // signal name
+	Tty      bool     `json:"tty,omitempty"`
+	Cols     uint16   `json:"cols,omitempty"`
+	Rows     uint16   `json:"rows,omitempty"`
 }
 
 func NewStart(cmd string, args []string) Frame {
 	return Frame{Type: "start", Cmd: cmd, Args: args}
+}
+
+func NewStartTTY(cmd string, args []string, cols, rows uint16) Frame {
+	return Frame{Type: "start", Cmd: cmd, Args: args, Tty: true, Cols: cols, Rows: rows}
+}
+
+func NewResize(cols, rows uint16) Frame {
+	return Frame{Type: "resize", Cols: cols, Rows: rows}
 }
 
 func NewStdin(data []byte) Frame {

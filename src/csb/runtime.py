@@ -163,6 +163,7 @@ def start_host_exec(
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
         text=True,
     )
 
