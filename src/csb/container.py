@@ -8,7 +8,6 @@ import textwrap
 from pathlib import Path
 
 from .config import CONTAINER_HOME, CONTAINER_WORKDIR, Config, Mount
-from .runtime import Runtime
 
 
 ENTRYPOINT_SH = """\

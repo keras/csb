@@ -6,10 +6,10 @@ import pytest
 
 from .config import (
     CSB_DEFAULT_FILES,
-    Config,
     OPTIONS,
     _format_help_full,
     _init_config_dir,
+    _workdir_config_path,
     parse_args,
 )
 
@@ -210,3 +210,99 @@ class TestHelpFull:
         output = _format_help_full()
         assert "EXAMPLE config.yaml" in output
         assert "# csb configuration" in output
+
+
+class TestWorkdirConfig:
+    """Per-workdir config overrides user config at the top-level key level."""
+
+    def test_workdir_yaml_overrides_user_yaml(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        workspace = tmp_path / "myproject"
+        workspace.mkdir(parents=True)
+        config_dir = home / ".config" / "csb"
+        config_dir.mkdir(parents=True)
+        (config_dir / "config.yaml").write_text("runtime: docker\nbase_image: ubuntu:latest\n")
+        proj_dir = config_dir / "projects"
+        proj_dir.mkdir()
+        workdir_cfg = _workdir_config_path(config_dir, workspace)
+        workdir_cfg.write_text("base_image: alpine:latest\n")
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(Path, "cwd", staticmethod(lambda: workspace))
+        monkeypatch.delenv("CSB_RUNTIME", raising=False)
+
+        cfg = parse_args(["--no-tmux", "--no-tty"])
+        assert cfg.base_image == "alpine:latest"
+        assert cfg.runtime == "docker"  # user yaml still applies for unoverridden keys
+
+    def test_absent_workdir_yaml_falls_through_to_user_yaml(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        workspace = tmp_path / "myproject"
+        workspace.mkdir(parents=True)
+        config_dir = home / ".config" / "csb"
+        config_dir.mkdir(parents=True)
+        (config_dir / "config.yaml").write_text("runtime: podman\n")
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(Path, "cwd", staticmethod(lambda: workspace))
+        monkeypatch.delenv("CSB_RUNTIME", raising=False)
+
+        cfg = parse_args(["--no-tmux", "--no-tty"])
+        assert cfg.runtime == "podman"
+
+    def test_no_workspace_skips_workdir_yaml(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        config_dir = home / ".config" / "csb"
+        config_dir.mkdir(parents=True)
+        (config_dir / "config.yaml").write_text("runtime: docker\n")
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+        monkeypatch.delenv("CSB_RUNTIME", raising=False)
+
+        cfg = parse_args(["--no-workspace", "--no-tmux", "--no-tty"])
+        assert cfg.workdir_config_path is None
+        assert cfg.runtime == "docker"
+
+
+class TestWorkdirConfigPath:
+    def test_hash_stability(self):
+        """Same path always produces same hash."""
+        config_dir = Path("/tmp/csb")
+        workspace = Path("/home/user/myproject")
+        p1 = _workdir_config_path(config_dir, workspace)
+        p2 = _workdir_config_path(config_dir, workspace)
+        assert p1 == p2
+
+    def test_different_paths_produce_different_hashes(self):
+        config_dir = Path("/tmp/csb")
+        p1 = _workdir_config_path(config_dir, Path("/home/user/proj-a"))
+        p2 = _workdir_config_path(config_dir, Path("/home/user/proj-b"))
+        assert p1 != p2
+
+    def test_path_structure(self):
+        config_dir = Path("/tmp/csb")
+        workspace = Path("/home/user/myproject")
+        p = _workdir_config_path(config_dir, workspace)
+        assert p.parent == config_dir / "projects"
+        assert p.suffix == ".yaml"
+        assert len(p.stem) == 16
+
+
+class TestConfigEdit:
+    def test_config_edit_user_sets_field(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+        monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+        cfg = parse_args(["--no-workspace", "--config-edit", "user"])
+        assert cfg.config_edit == "user"
+
+    def test_config_edit_workdir_sets_field(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+        monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+        cfg = parse_args(["--config-edit", "workdir"])
+        assert cfg.config_edit == "workdir"
+
+    def test_config_edit_workdir_path_matches_workdir_config_path(self, tmp_path, monkeypatch):
+        workspace = tmp_path / "proj"
+        workspace.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+        monkeypatch.setattr(Path, "cwd", staticmethod(lambda: workspace))
+        cfg = parse_args(["--config-edit", "workdir"])
+        assert cfg.workdir_config_path == _workdir_config_path(cfg.config_dir, workspace)

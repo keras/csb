@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import shutil
@@ -314,6 +315,7 @@ class Config:
     reset_home: bool = False
     clean: bool = False
     verbose: bool = False
+    config_edit: str | None = None
     passthrough_args: list[str] = field(default_factory=list)
 
     # Registered options — defaults mirror OPTIONS for direct Config() construction
@@ -359,6 +361,13 @@ class Config:
     def csb_home(self) -> Path:
         """Dedicated container home directory on the host."""
         return self.config_dir / "home"  # type: ignore[operator]
+
+    @property
+    def workdir_config_path(self) -> Path | None:
+        """Per-workdir config file path, or None when there is no workspace."""
+        if self.workspace is None:
+            return None
+        return _workdir_config_path(self.config_dir, self.workspace)  # type: ignore[arg-type]
 
 
 # YAML template generation --------------------------------------------------
@@ -448,9 +457,24 @@ CSB_DEFAULT_FILES: dict[str, Any] = {
 # Config loading & resolution -----------------------------------------------
 
 
+def _workdir_config_path(config_dir: Path, workspace: Path) -> Path:
+    """Return the per-workdir config path for the given absolute workspace path."""
+    h = hashlib.sha256(str(workspace).encode()).hexdigest()[:16]
+    return config_dir / "projects" / f"{h}.yaml"
+
+
 def _load_csb_config(config_dir: Path) -> dict:
     """Load config.yaml from config_dir; return empty dict if absent or empty."""
     path = config_dir / "config.yaml"
+    if not path.exists():
+        return {}
+    with path.open() as f:
+        return yaml.safe_load(f) or {}
+
+
+def _load_workdir_config(config_dir: Path, workspace: Path) -> dict:
+    """Load the per-workdir config; return empty dict if absent or empty."""
+    path = _workdir_config_path(config_dir, workspace)
     if not path.exists():
         return {}
     with path.open() as f:
@@ -563,10 +587,13 @@ def _add_option_args(parser: argparse.ArgumentParser) -> None:
 
 
 def parse_args(argv: list[str]) -> Config:
-    """Parse CLI arguments with unified CLI > env > yaml > default precedence."""
-    # Pre-pass: --config-dir must be resolved before loading yaml.
+    """Parse CLI arguments with unified CLI > env > workdir-yaml > user-yaml > default precedence."""
+    # Pre-pass: --config-dir and --workspace/--no-workspace must be resolved before
+    # loading yaml, since workdir yaml path depends on both.
     _pre = argparse.ArgumentParser(add_help=False)
     _pre.add_argument("--config-dir", default=None)
+    _pre.add_argument("--workspace", default=None)
+    _pre.add_argument("--no-workspace", action="store_true")
     _pre_ns, _ = _pre.parse_known_args(argv)
     config_dir = (
         Path(
@@ -577,7 +604,23 @@ def parse_args(argv: list[str]) -> Config:
         .expanduser()
         .resolve()
     )
-    yaml_cfg = _load_csb_config(config_dir)
+    user_yaml = _load_csb_config(config_dir)
+    if _pre_ns.no_workspace:
+        _pre_workspace: Path | None = None
+    elif _pre_ns.workspace:
+        _pre_workspace = Path(_pre_ns.workspace).resolve()
+    else:
+        _pre_workspace = Path.cwd()
+    if _pre_workspace is not None:
+        workdir_yaml = _load_workdir_config(config_dir, _pre_workspace)
+    else:
+        workdir_yaml = {}
+    # Shallow merge: workdir keys replace user keys for any top-level option key present.
+    # Safe because every yaml_key in OPTIONS is a 1-element tuple today.
+    assert all(
+        len(s.yaml_key) == 1 for s in OPTIONS if s.yaml_key
+    ), "yaml_key with depth > 1 requires deep merge — update _resolve logic"
+    yaml_cfg = {**user_yaml, **workdir_yaml}
 
     parser = argparse.ArgumentParser(
         prog="csb",
@@ -627,6 +670,13 @@ def parse_args(argv: list[str]) -> Config:
         action="store_true",
         help="show all config options, env vars, and example YAML, then exit",
     )
+    parser.add_argument(
+        "--config-edit",
+        choices=["user", "workdir"],
+        default=None,
+        metavar="{user,workdir}",
+        help="open the user or workdir config file in $VISUAL/$EDITOR/vi, then exit",
+    )
 
     _add_option_args(parser)
 
@@ -672,6 +722,7 @@ def parse_args(argv: list[str]) -> Config:
         reset_home=ns.reset_home,
         clean=ns.clean,
         verbose=ns.verbose,
+        config_edit=ns.config_edit,
         passthrough_args=passthrough,
         **resolved,
     )

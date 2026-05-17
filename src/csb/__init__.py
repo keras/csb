@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 import sys
-from pathlib import Path
 
-from .config import Config, Mount, _init_config_dir, parse_args
-from .container import build_run_command, container_labels, image_name, resolve_env, resolve_mounts, volume_labels, _build_context_tar
+from .config import Config, _init_config_dir, _render_template, _workdir_config_path, parse_args
+from .container import build_run_command, image_name, resolve_env, resolve_mounts, volume_labels, _build_context_tar
 from .runtime import Runtime, start_host_exec
 
 
@@ -30,10 +30,38 @@ def _clean(cfg: Config, runtime: Runtime) -> None:
         runtime.remove_volume(vol)
 
 
+def _config_edit(cfg: Config) -> None:
+    """Open the target config file in the user's editor, creating it if absent."""
+    header = ""
+    if cfg.config_edit == "workdir":
+        if cfg.workspace is None:
+            print(
+                "csb: --config-edit workdir requires a workspace (not --no-workspace)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        path = _workdir_config_path(cfg.config_dir, cfg.workspace)
+        header = f"# workdir: {cfg.workspace}\n"
+    else:
+        path = cfg.config_dir / "config.yaml"
+
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(header + _render_template())
+
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+    result = subprocess.run([editor, str(path)])
+    sys.exit(result.returncode)
+
+
 def main(args) -> None:
     cfg = parse_args(args)
     _init_config_dir(cfg.config_dir)
     runtime = Runtime(cfg.container_cli)
+
+    if cfg.config_edit is not None:
+        _config_edit(cfg)
+        return  # unreachable; _config_edit calls sys.exit
 
     if cfg.clean:
         _clean(cfg, runtime)
