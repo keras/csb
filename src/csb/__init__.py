@@ -15,16 +15,36 @@ from .runtime import Runtime, start_host_exec
 def _clean(cfg: Config, runtime: Runtime) -> None:
     """Remove all csb:* images and all labeled csb volumes."""
     image_ids = runtime.list_csb_image_ids()
-    if image_ids:
-        print(f"Removing {len(image_ids)} csb image(s)...")
-        runtime.remove_images(image_ids)
-    else:
-        print("No csb images found.")
-
     volumes = runtime.list_csb_volumes()
     # Always include the current home volume in case it predates labels.
     if cfg.home_volume not in volumes:
         volumes.append(cfg.home_volume)
+
+    if not image_ids and not volumes:
+        print("Nothing to remove.")
+        return
+
+    if image_ids:
+        print(f"Images ({len(image_ids)}):")
+        for iid in image_ids:
+            print(f"  {iid}")
+    if volumes:
+        print(f"Volumes ({len(volumes)}):")
+        for vol in volumes:
+            print(f"  {vol}")
+
+    try:
+        answer = input("\nRemove all of the above? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        sys.exit(1)
+    if answer != "y":
+        print("Aborted.")
+        sys.exit(1)
+
+    if image_ids:
+        print(f"Removing {len(image_ids)} image(s)...")
+        runtime.remove_images(image_ids)
     for vol in volumes:
         print(f"Removing volume {vol}...")
         runtime.remove_volume(vol)
