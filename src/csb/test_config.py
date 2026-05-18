@@ -290,19 +290,71 @@ class TestConfigEdit:
     def test_config_edit_user_sets_field(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
         monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
-        cfg = parse_args(["--no-workspace", "--config-edit", "user"])
-        assert cfg.config_edit == "user"
+        cfg = parse_args(["config-edit", "--no-workspace", "user"])
+        assert cfg.subcommand == "config_edit"
+        assert cfg.config_edit_target == "user"
 
     def test_config_edit_workdir_sets_field(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
         monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
-        cfg = parse_args(["--config-edit", "workdir"])
-        assert cfg.config_edit == "workdir"
+        cfg = parse_args(["config-edit", "workdir"])
+        assert cfg.subcommand == "config_edit"
+        assert cfg.config_edit_target == "workdir"
 
     def test_config_edit_workdir_path_matches_workdir_config_path(self, tmp_path, monkeypatch):
         workspace = tmp_path / "proj"
         workspace.mkdir()
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
         monkeypatch.setattr(Path, "cwd", staticmethod(lambda: workspace))
-        cfg = parse_args(["--config-edit", "workdir"])
+        cfg = parse_args(["config-edit", "workdir"])
         assert cfg.workdir_config_path == _workdir_config_path(cfg.config_dir, workspace)
+
+    def test_config_edit_unknown_target_exits(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+        monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+        with pytest.raises(SystemExit):
+            parse_args(["config-edit", "bogus"])
+
+
+class TestCleanSubcommand:
+    def test_clean_sets_subcommand(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+        monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+        cfg = parse_args(["clean"])
+        assert cfg.subcommand == "clean"
+
+    def test_clean_verbose_flag(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+        monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+        cfg = parse_args(["clean", "-v"])
+        assert cfg.verbose is True
+
+    def test_clean_global_flag_before_subcommand(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+        monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+        cfg = parse_args(["-v", "clean"])
+        assert cfg.subcommand == "clean"
+        assert cfg.verbose is True
+
+
+class TestSubcommandDetection:
+    def test_explicit_run_with_clean_passthrough(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+        monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+        cfg = parse_args(["run", "clean"])
+        assert cfg.subcommand == "run"
+        assert cfg.passthrough_args == ["clean"]
+
+    def test_double_dash_escapes_subcommand_detection(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+        monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+        cfg = parse_args(["--", "clean", "x"])
+        assert cfg.subcommand == "run"
+        assert cfg.passthrough_args == ["clean", "x"]
+
+    def test_implicit_run_on_unknown_first_token(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+        monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+        cfg = parse_args(["echo", "hello"])
+        assert cfg.subcommand == "run"
+        assert cfg.passthrough_args == ["echo", "hello"]

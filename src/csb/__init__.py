@@ -33,10 +33,10 @@ def _clean(cfg: Config, runtime: Runtime) -> None:
 def _config_edit(cfg: Config) -> None:
     """Open the target config file in the user's editor, creating it if absent."""
     header = ""
-    if cfg.config_edit == "workdir":
+    if cfg.config_edit_target == "workdir":
         if cfg.workspace is None:
             print(
-                "csb: --config-edit workdir requires a workspace (not --no-workspace)",
+                "csb config-edit workdir requires a workspace (not --no-workspace)",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -59,11 +59,11 @@ def main(args) -> None:
     _init_config_dir(cfg.config_dir)
     runtime = Runtime(cfg.container_cli)
 
-    if cfg.config_edit is not None:
+    if cfg.subcommand == "config_edit":
         _config_edit(cfg)
         return  # unreachable; _config_edit calls sys.exit
 
-    if cfg.clean:
+    if cfg.subcommand == "clean":
         _clean(cfg, runtime)
         return
 

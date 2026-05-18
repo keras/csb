@@ -38,6 +38,32 @@ _UNSET: Any = object()  # CLI flag not supplied
 _MISSING: Any = object()  # yaml key not present
 
 
+# Subcommand detection ------------------------------------------------------
+
+# CLI token → internal subcommand name (underscore form used in Config.subcommand).
+_SUBCOMMAND_MAP: dict[str, str] = {
+    "clean": "clean",
+    "config-edit": "config_edit",
+    "run": "run",
+}
+
+
+def _detect_subcommand(argv: list[str]) -> tuple[str, list[str]]:
+    """Return (subcommand, remaining_argv) by scanning for the first non-option token.
+
+    If the token is a known subcommand it is consumed and mapped to its internal
+    name; otherwise 'run' is injected as the implicit default and argv is unchanged.
+    """
+    for i, token in enumerate(argv):
+        if token == "--":
+            break
+        if not token.startswith("-"):
+            if token in _SUBCOMMAND_MAP:
+                return _SUBCOMMAND_MAP[token], argv[:i] + argv[i + 1 :]
+            break
+    return "run", argv
+
+
 # Mount ---------------------------------------------------------------------
 
 
@@ -311,11 +337,11 @@ class Config:
     home: Path
     config_dir: Path | None = None
     workspace: Path | None = None  # None = ephemeral, no workspace mount
+    subcommand: str = "run"
     rebuild: bool = False
     reset_home: bool = False
-    clean: bool = False
     verbose: bool = False
-    config_edit: str | None = None
+    config_edit_target: str | None = None  # "user" or "workdir" for config-edit subcommand
     passthrough_args: list[str] = field(default_factory=list)
 
     # Registered options — defaults mirror OPTIONS for direct Config() construction
@@ -586,15 +612,16 @@ def _add_option_args(parser: argparse.ArgumentParser) -> None:
             parser.add_argument(spec.flag, **kwargs)
 
 
-def parse_args(argv: list[str]) -> Config:
-    """Parse CLI arguments with unified CLI > env > workdir-yaml > user-yaml > default precedence."""
-    # Pre-pass: --config-dir and --workspace/--no-workspace must be resolved before
-    # loading yaml, since workdir yaml path depends on both.
+def _pre_parse(sub_argv: list[str]) -> tuple[Path, Path | None, dict]:
+    """Run the pre-pass to resolve config_dir, workspace, and yaml config.
+
+    Returns (config_dir, workspace_or_None, merged_yaml_cfg).
+    """
     _pre = argparse.ArgumentParser(add_help=False)
     _pre.add_argument("--config-dir", default=None)
     _pre.add_argument("--workspace", default=None)
     _pre.add_argument("--no-workspace", action="store_true")
-    _pre_ns, _ = _pre.parse_known_args(argv)
+    _pre_ns, _ = _pre.parse_known_args(sub_argv)
     config_dir = (
         Path(
             _pre_ns.config_dir
@@ -606,123 +633,205 @@ def parse_args(argv: list[str]) -> Config:
     )
     user_yaml = _load_csb_config(config_dir)
     if _pre_ns.no_workspace:
-        _pre_workspace: Path | None = None
+        pre_workspace: Path | None = None
     elif _pre_ns.workspace:
-        _pre_workspace = Path(_pre_ns.workspace).resolve()
+        pre_workspace = Path(_pre_ns.workspace).resolve()
     else:
-        _pre_workspace = Path.cwd()
-    if _pre_workspace is not None:
-        workdir_yaml = _load_workdir_config(config_dir, _pre_workspace)
-    else:
-        workdir_yaml = {}
-    # Shallow merge: workdir keys replace user keys for any top-level option key present.
-    # Safe because every yaml_key in OPTIONS is a 1-element tuple today.
+        pre_workspace = Path.cwd()
+    workdir_yaml = (
+        _load_workdir_config(config_dir, pre_workspace)
+        if pre_workspace is not None
+        else {}
+    )
     assert all(
         len(s.yaml_key) == 1 for s in OPTIONS if s.yaml_key
     ), "yaml_key with depth > 1 requires deep merge — update _resolve logic"
     yaml_cfg = {**user_yaml, **workdir_yaml}
+    return config_dir, pre_workspace, yaml_cfg
 
-    parser = argparse.ArgumentParser(
-        prog="csb",
-        description="Run commands in an isolated container.",
-    )
-    workspace_group = parser.add_mutually_exclusive_group()
-    workspace_group.add_argument(
-        "--workspace",
-        default=None,
-        metavar="PATH",
-        help="host directory to mount as the workspace (default: CWD)",
-    )
-    workspace_group.add_argument(
-        "--no-workspace",
-        action="store_true",
-        help="ephemeral workspace, no host directory mounted",
-    )
-    parser.add_argument(
-        "--clean",
-        action="store_true",
-        help="remove all csb images and the home volume, then exit",
-    )
-    parser.add_argument(
-        "--rebuild",
-        action="store_true",
-        help="force a full image rebuild and recreate volumes",
-    )
-    parser.add_argument(
-        "--reset-home",
-        action="store_true",
-        help="remove and recreate the home volume (wipes all tool state)",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="print the run command before executing",
-    )
-    parser.add_argument(
-        "--config-dir",
-        default=str(config_dir),
-        metavar="PATH",
-        help="host directory for csb config (default: ~/.config/csb)",
-    )
-    parser.add_argument(
-        "--help-full",
-        action="store_true",
-        help="show all config options, env vars, and example YAML, then exit",
-    )
-    parser.add_argument(
-        "--config-edit",
-        choices=["user", "workdir"],
-        default=None,
-        metavar="{user,workdir}",
-        help="open the user or workdir config file in $VISUAL/$EDITOR/vi, then exit",
-    )
 
-    _add_option_args(parser)
+def parse_args(argv: list[str]) -> Config:
+    """Parse CLI arguments dispatching to the appropriate subcommand parser.
 
-    parser.add_argument(
-        "rest",
-        nargs=argparse.REMAINDER,
-        help="arguments passed to the container CMD (use -- to separate)",
-    )
+    Subcommands: clean, config-edit, run (default when no subcommand is given).
+    Precedence for registered options: CLI > env > workdir-yaml > user-yaml > default.
+    """
+    subcommand, sub_argv = _detect_subcommand(argv)
+    config_dir, pre_workspace, yaml_cfg = _pre_parse(sub_argv)
 
-    ns = parser.parse_args(argv)
-
-    if ns.help_full:
-        print(_format_help_full())
-        raise SystemExit(0)
-
-    # REMAINDER captures the '--' separator if present; strip it
-    passthrough = ns.rest
-    if passthrough and passthrough[0] == "--":
-        passthrough = passthrough[1:]
-
-    if ns.no_workspace:
-        workspace = None
-    elif ns.workspace:
-        workspace = Path(ns.workspace).resolve()
-    else:
-        workspace = Path.cwd()
-
-    # Resolve registered options through the unified precedence pipeline.
-    resolved: dict[str, Any] = {}
-    try:
+    if subcommand == "clean":  # internal name
+        parser = argparse.ArgumentParser(
+            prog="csb clean",
+            description="Remove all csb images and labeled volumes.",
+        )
+        parser.add_argument(
+            "--config-dir",
+            default=str(config_dir),
+            metavar="PATH",
+            help="csb config directory (default: ~/.config/csb)",
+        )
+        parser.add_argument(
+            "-v", "--verbose", action="store_true", help="verbose output"
+        )
+        ns = parser.parse_args(sub_argv)
+        # Resolve options so home_volume and runtime are config-aware.
+        # On yaml errors fall back to defaults rather than blocking cleanup.
+        resolved: dict[str, Any] = {}
         for spec in OPTIONS:
-            cli_val = getattr(ns, spec.name, _UNSET)
-            resolved[spec.name] = _resolve(spec, cli_val, yaml_cfg)
-    except ValueError as e:
-        parser.error(str(e))
+            try:
+                resolved[spec.name] = _resolve(spec, _UNSET, yaml_cfg)
+            except ValueError:
+                d = spec.default
+                resolved[spec.name] = d() if callable(d) else d
+        return Config(
+            cwd=Path.cwd(),
+            home=Path.home(),
+            config_dir=config_dir,
+            workspace=pre_workspace,
+            subcommand="clean",
+            verbose=ns.verbose,
+            **resolved,
+        )
 
-    return Config(
-        cwd=Path.cwd(),
-        home=Path.home(),
-        config_dir=config_dir,
-        workspace=workspace,
-        rebuild=ns.rebuild,
-        reset_home=ns.reset_home,
-        clean=ns.clean,
-        verbose=ns.verbose,
-        config_edit=ns.config_edit,
-        passthrough_args=passthrough,
-        **resolved,
-    )
+    elif subcommand == "config_edit":
+        parser = argparse.ArgumentParser(
+            prog="csb config-edit",
+            description="Open the user or workdir config file in $VISUAL/$EDITOR/vi.",
+        )
+        parser.add_argument(
+            "--config-dir",
+            default=str(config_dir),
+            metavar="PATH",
+            help="csb config directory (default: ~/.config/csb)",
+        )
+        ws_group = parser.add_mutually_exclusive_group()
+        ws_group.add_argument(
+            "--workspace",
+            default=None,
+            metavar="PATH",
+            help="host directory used to locate the workdir config (default: CWD)",
+        )
+        ws_group.add_argument(
+            "--no-workspace",
+            action="store_true",
+            help="no workspace (only valid with 'user' target)",
+        )
+        parser.add_argument(
+            "-v", "--verbose", action="store_true", help="verbose output"
+        )
+        parser.add_argument(
+            "target",
+            choices=["user", "workdir"],
+            help="which config file to edit",
+        )
+        ns = parser.parse_args(sub_argv)
+        if ns.no_workspace:
+            workspace: Path | None = None
+        elif ns.workspace:
+            workspace = Path(ns.workspace).resolve()
+        else:
+            workspace = pre_workspace
+        return Config(
+            cwd=Path.cwd(),
+            home=Path.home(),
+            config_dir=config_dir,
+            workspace=workspace,
+            subcommand="config_edit",
+            config_edit_target=ns.target,
+            verbose=ns.verbose,
+        )
+
+    else:  # run (explicit or implicit default)
+        parser = argparse.ArgumentParser(
+            prog="csb",
+            description=(
+                "Run commands in an isolated container.\n\n"
+                "Subcommands: clean, config-edit, run (default — implicit when omitted).\n"
+                "To run a binary named 'clean' inside the sandbox: csb run clean"
+            ),
+        )
+        ws_group = parser.add_mutually_exclusive_group()
+        ws_group.add_argument(
+            "--workspace",
+            default=None,
+            metavar="PATH",
+            help="host directory to mount as the workspace (default: CWD)",
+        )
+        ws_group.add_argument(
+            "--no-workspace",
+            action="store_true",
+            help="ephemeral workspace, no host directory mounted",
+        )
+        parser.add_argument(
+            "--rebuild",
+            action="store_true",
+            help="force a full image rebuild and recreate volumes",
+        )
+        parser.add_argument(
+            "--reset-home",
+            action="store_true",
+            help="remove and recreate the home volume (wipes all tool state)",
+        )
+        parser.add_argument(
+            "-v",
+            "--verbose",
+            action="store_true",
+            help="print the run command before executing",
+        )
+        parser.add_argument(
+            "--config-dir",
+            default=str(config_dir),
+            metavar="PATH",
+            help="host directory for csb config (default: ~/.config/csb)",
+        )
+        parser.add_argument(
+            "--help-full",
+            action="store_true",
+            help="show all config options, env vars, and example YAML, then exit",
+        )
+
+        _add_option_args(parser)
+
+        parser.add_argument(
+            "rest",
+            nargs=argparse.REMAINDER,
+            help="arguments passed to the container CMD (use -- to separate)",
+        )
+
+        ns = parser.parse_args(sub_argv)
+
+        if ns.help_full:
+            print(_format_help_full())
+            raise SystemExit(0)
+
+        passthrough = ns.rest
+        if passthrough and passthrough[0] == "--":
+            passthrough = passthrough[1:]
+
+        if ns.no_workspace:
+            run_workspace: Path | None = None
+        elif ns.workspace:
+            run_workspace = Path(ns.workspace).resolve()
+        else:
+            run_workspace = Path.cwd()
+
+        resolved = {}
+        try:
+            for spec in OPTIONS:
+                cli_val = getattr(ns, spec.name, _UNSET)
+                resolved[spec.name] = _resolve(spec, cli_val, yaml_cfg)
+        except ValueError as e:
+            parser.error(str(e))
+
+        return Config(
+            cwd=Path.cwd(),
+            home=Path.home(),
+            config_dir=config_dir,
+            workspace=run_workspace,
+            subcommand="run",
+            rebuild=ns.rebuild,
+            reset_home=ns.reset_home,
+            verbose=ns.verbose,
+            passthrough_args=passthrough,
+            **resolved,
+        )
