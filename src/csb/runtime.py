@@ -21,14 +21,17 @@ class Runtime:
             == 0
         )
 
-    def build_image(self, name: str, context: bytes, quiet: bool) -> None:
+    def build_image(self, name: str, context: bytes, labels: dict[str, str], quiet: bool) -> None:
         print(f"Building {name}...")
+        label_args: list[str] = []
+        for k, v in labels.items():
+            label_args += ["--label", f"{k}={v}"]
         run_kwargs: dict = {}
         if quiet:
             run_kwargs["stdout"] = subprocess.DEVNULL
             run_kwargs["stderr"] = subprocess.DEVNULL
         subprocess.run(
-            [self.cli, "build", "-t", name, "-"],
+            [self.cli, "build", "-t", name, *label_args, "-"],
             input=context,
             check=True,
             **run_kwargs,
@@ -36,11 +39,11 @@ class Runtime:
 
     def list_csb_image_ids(self) -> list[str]:
         result = subprocess.run(
-            [self.cli, "images", "--filter", "reference=csb", "--format", "{{.ID}}"],
+            [self.cli, "images", "--filter", "label=csb.managed=true", "--format", "{{.ID}}"],
             capture_output=True,
             text=True,
         )
-        return result.stdout.split() if result.returncode == 0 else []
+        return list(dict.fromkeys(result.stdout.split())) if result.returncode == 0 else []
 
     def remove_images(self, ids: list[str]) -> None:
         subprocess.run([self.cli, "rmi", "-f", *ids], check=False)

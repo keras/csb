@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 from .config import Config, _init_config_dir, _render_template, _workdir_config_path, parse_args
-from .container import build_run_command, image_name, resolve_env, resolve_mounts, volume_labels, _build_context_tar
+from .container import build_run_command, image_labels, image_name, resolve_env, resolve_mounts, volume_labels, _build_context_tar
 from .runtime import Runtime, start_host_exec
 
 
@@ -92,7 +92,7 @@ def main(args) -> None:
         runtime.remove_volume(cfg.home_volume)
 
     if cfg.rebuild or not runtime.image_exists(image_name(cfg)):
-        runtime.build_image(image_name(cfg), _build_context_tar(cfg), quiet=not cfg.verbose)
+        runtime.build_image(image_name(cfg), _build_context_tar(cfg), image_labels(cfg), quiet=not cfg.verbose)
 
     runtime.ensure_volume(cfg.home_volume, volume_labels(cfg))
 

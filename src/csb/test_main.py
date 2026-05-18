@@ -21,8 +21,8 @@ class FakeRuntime:
         self.calls.append(("image_exists", name))
         return self._image_exists
 
-    def build_image(self, name: str, context: bytes, quiet: bool) -> None:
-        self.calls.append(("build_image", name, quiet))
+    def build_image(self, name: str, context: bytes, labels: dict, quiet: bool) -> None:
+        self.calls.append(("build_image", name, labels, quiet))
 
     def list_csb_image_ids(self) -> list[str]:
         self.calls.append(("list_csb_image_ids",))
@@ -155,6 +155,7 @@ class TestMainIntegration:
 
         builds = [c for c in sandbox.runtime.calls if c[0] == "build_image"]
         assert len(builds) == 1
+        assert builds[0][2].get("csb.managed") == "true"
 
     def test_reset_home_removes_volume(self, sandbox):
         main(["--reset-home", "--no-tmux", "--no-tty"])

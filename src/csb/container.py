@@ -489,6 +489,14 @@ def volume_labels(cfg: Config) -> dict[str, str]:
     }
 
 
+def image_labels(cfg: Config) -> dict[str, str]:
+    """Labels applied to every csb image at build time."""
+    return {
+        "csb.managed": "true",
+        "csb.config-dir": str(cfg.config_dir),
+    }
+
+
 def build_run_command(
     cfg: Config, mounts: list[Mount], env: list[tuple[str, str]]
 ) -> list[str]:
