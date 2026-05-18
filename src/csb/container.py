@@ -501,6 +501,8 @@ def build_run_command(
     cfg: Config, mounts: list[Mount], env: list[tuple[str, str]]
 ) -> list[str]:
     """Assemble the full container run command."""
+    if cfg.host_network and cfg.publish:
+        raise ValueError("--publish is ignored when --host-network is set; use one or the other")
     cmd: list[str] = [cfg.container_cli, "run", "-i"]
     if cfg.use_tty:
         cmd.append("-t")
@@ -539,6 +541,9 @@ def build_run_command(
 
     if cfg.host_network:
         cmd.extend(["--network", "host"])
+
+    for port_spec in cfg.publish:
+        cmd.extend(["-p", port_spec])
 
     # Named volume as home base — tool state (.cargo, .rustup, .local, …)
     # stays in the runtime's storage, off the host filesystem.

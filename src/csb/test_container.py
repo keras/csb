@@ -4,7 +4,9 @@ import io
 import tarfile
 from pathlib import Path
 
-from .config import CONTAINER_HOME, CONTAINER_WORKDIR, Config, _parse_mount
+import pytest
+
+from .config import CONTAINER_HOME, CONTAINER_WORKDIR, Config, Mount, _parse_mount
 from .container import (
     _apt_packages,
     _BASE_PACKAGES,
@@ -12,6 +14,7 @@ from .container import (
     _make_dockerfile,
     _PODMAN_PACKAGES,
     _podman_snippets,
+    build_run_command,
     image_name,
     resolve_mounts,
 )
@@ -227,3 +230,38 @@ class TestResolveMounts:
         mounts = resolve_mounts(cfg)
         explicit = [m for m in mounts if m.dst.startswith(CONTAINER_HOME + "/")]
         assert len(explicit) == 0
+
+
+class TestBuildRunCommandPublish:
+    def _cfg(self, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        return Config(cwd=home, home=home, workspace=None, use_tty=False)
+
+    def test_no_publish_flags_by_default(self, tmp_path):
+        cfg = self._cfg(tmp_path)
+        cmd = build_run_command(cfg, [], [])
+        assert "-p" not in cmd
+
+    def test_single_publish_adds_p_flag(self, tmp_path):
+        cfg = self._cfg(tmp_path)
+        cfg.publish = ["8080:8080"]
+        cmd = build_run_command(cfg, [], [])
+        assert "-p" in cmd
+        assert "8080:8080" in cmd
+
+    def test_multiple_publish_adds_multiple_p_flags(self, tmp_path):
+        cfg = self._cfg(tmp_path)
+        cfg.publish = ["8080:8080", "127.0.0.1:5432:5432"]
+        cmd = build_run_command(cfg, [], [])
+        p_indices = [i for i, x in enumerate(cmd) if x == "-p"]
+        assert len(p_indices) == 2
+        assert cmd[p_indices[0] + 1] == "8080:8080"
+        assert cmd[p_indices[1] + 1] == "127.0.0.1:5432:5432"
+
+    def test_publish_and_host_network_raises(self, tmp_path):
+        cfg = self._cfg(tmp_path)
+        cfg.publish = ["8080:8080"]
+        cfg.host_network = True
+        with pytest.raises(ValueError, match="--host-network"):
+            build_run_command(cfg, [], [])

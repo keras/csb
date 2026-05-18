@@ -173,6 +173,26 @@ def _validate_env_pair(val: str) -> str:
     return val
 
 
+_PORT_RE = re.compile(
+    r"^(?:"
+    r"(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-fA-F:]+\]):"  # host_ip (v4 or [v6]) followed by :
+    r"(?:\d+(?:-\d+)?)?:"                                # host_port (may be empty for auto-assign)
+    r"|(?:\d+(?:-\d+)?):"                                # or just host_port:
+    r")?"
+    r"\d+(?:-\d+)?"                                      # container_port (required)
+    r"(?:/(?:tcp|udp|sctp))?$"
+)
+
+
+def _parse_publish(val: str) -> str:
+    """Validate a port publish spec: [[host_ip:]host_port:]container_port[/proto]."""
+    if not _PORT_RE.fullmatch(val):
+        raise ValueError(
+            f"invalid publish spec {val!r}; expected [[host_ip:]host_port:]container_port[/tcp|udp|sctp]"
+        )
+    return val
+
+
 def _bool_from_env(raw: str) -> bool:
     return raw.strip().lower() not in ("0", "false", "no", "")
 
@@ -287,6 +307,17 @@ OPTIONS: list[OptionSpec] = [
         validator=_validate_env_pair,
     ),
     OptionSpec(
+        name="publish",
+        type=list,
+        default=[],
+        flag="--publish",
+        env="CSB_PUBLISH",
+        yaml_key=("publish",),
+        help="publish a container port to the host (format: [[host_ip:]host_port:]container_port[/tcp|udp|sctp], repeatable)",
+        validator=_parse_publish,
+        yaml_example="\n#   - 8080:8080\n#   - 127.0.0.1:5432:5432",
+    ),
+    OptionSpec(
         name="host_network",
         type=bool,
         default=False,
@@ -357,6 +388,7 @@ class Config:
     image: str | None = None
     env_forward: list[str] = field(default_factory=list)
     env_inject: list[str] = field(default_factory=list)
+    publish: list[str] = field(default_factory=list)
     host_network: bool = False
     host_exec_enabled: bool = False
     host_exec_allow: list[str] = field(default_factory=list)

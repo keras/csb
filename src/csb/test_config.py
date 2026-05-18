@@ -9,6 +9,7 @@ from .config import (
     OPTIONS,
     _format_help_full,
     _init_config_dir,
+    _parse_publish,
     _workdir_config_path,
     parse_args,
 )
@@ -314,6 +315,68 @@ class TestConfigEdit:
         monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
         with pytest.raises(SystemExit):
             parse_args(["config-edit", "bogus"])
+
+
+class TestParsePublish:
+    def test_container_port_only(self):
+        assert _parse_publish("8080") == "8080"
+
+    def test_host_container_port(self):
+        assert _parse_publish("8080:8080") == "8080:8080"
+
+    def test_ip_host_container_port(self):
+        assert _parse_publish("127.0.0.1:5432:5432") == "127.0.0.1:5432:5432"
+
+    def test_ip_auto_host_port(self):
+        # host_ip::container_port — auto-assign host port bound to specific IP
+        assert _parse_publish("127.0.0.1::5432") == "127.0.0.1::5432"
+
+    def test_ipv6_host_container_port(self):
+        assert _parse_publish("[::1]:8080:8080") == "[::1]:8080:8080"
+
+    def test_ipv6_auto_host_port(self):
+        assert _parse_publish("[::1]::8080") == "[::1]::8080"
+
+    def test_port_with_tcp(self):
+        assert _parse_publish("8080:8080/tcp") == "8080:8080/tcp"
+
+    def test_port_with_udp(self):
+        assert _parse_publish("5353/udp") == "5353/udp"
+
+    def test_port_with_sctp(self):
+        assert _parse_publish("9899/sctp") == "9899/sctp"
+
+    def test_port_range(self):
+        assert _parse_publish("8080-8090:8080-8090") == "8080-8090:8080-8090"
+
+    def test_container_port_range_only(self):
+        assert _parse_publish("8000-8010") == "8000-8010"
+
+    def test_invalid_spec_raises(self):
+        with pytest.raises(ValueError):
+            _parse_publish("notaport")
+
+    def test_invalid_protocol_raises(self):
+        with pytest.raises(ValueError):
+            _parse_publish("8080/ftp")
+
+    def test_empty_raises(self):
+        with pytest.raises(ValueError):
+            _parse_publish("")
+
+    def test_publish_flag_parses(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+        monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+        cfg = parse_args(["--no-workspace", "--no-tmux", "--no-tty", "--publish", "8080:8080"])
+        assert "8080:8080" in cfg.publish
+
+    def test_publish_env_parses(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+        monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("CSB_PUBLISH", "3000 5432")
+        cfg = parse_args(["--no-workspace", "--no-tmux", "--no-tty"])
+        assert "3000" in cfg.publish
+        assert "5432" in cfg.publish
 
 
 class TestCleanSubcommand:
