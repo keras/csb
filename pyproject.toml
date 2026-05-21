@@ -28,4 +28,6 @@ markers = [
     "podman: live-container tests using Podman (select with -m podman)",
     "smoke: end-to-end smoke tests using whichever runtime is on PATH (select with -m smoke)",
     "host_exec: host-exec broker smoke tests (select with -m host_exec; requires csb-host-broker built)",
+    "integration: black-box CLI integration tests (no container needed unless also marked integration_live)",
+    "integration_live: integration tests that spin up a real container (slow; requires docker/podman)",
 ]
