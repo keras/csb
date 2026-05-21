@@ -1,16 +1,14 @@
-PYTHON := .venv/bin/python3
-PYTEST  := $(PYTHON) -m pytest
-
 BIN_DIR      := bin
-CSB_BIN_DIR  := src/csb/bin
+EMBED_DIR    := cmd/csb/files
 
-BROKER     := $(BIN_DIR)/csb-host-broker
-BROKER_PKG := $(CSB_BIN_DIR)/csb-host-broker
-CLIENT     := $(CSB_BIN_DIR)/csb-host-run
+CLIENT_AMD64 := $(BIN_DIR)/csb-host-run.amd64
+CLIENT_ARM64 := $(BIN_DIR)/csb-host-run.arm64
+CLIENT_TAR_XZ := $(EMBED_DIR)/csb-host-run.tar.xz
+CSB_CLI      := $(BIN_DIR)/csb
 
 GO_BUILD := CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath
 
-.PHONY: all build build-broker build-client test test-go test-py test-smoke test-host-exec clean
+.PHONY: all build build-client build-csb test clean
 
 all: build
 
@@ -18,37 +16,35 @@ all: build
 # Build
 # ---------------------------------------------------------------------------
 
-build: build-broker build-client
+build: build-client build-csb
 
-build-broker:
-	$(GO_BUILD) -o $(BROKER) ./cmd/csb-host-broker
-	cp $(BROKER) $(BROKER_PKG)
+build-client: $(CLIENT_TAR_XZ)
 
-build-client:
-	$(GO_BUILD) -o $(CLIENT) ./cmd/csb-host-run
+$(CLIENT_AMD64):
+	GOOS=linux GOARCH=amd64 $(GO_BUILD) -o $@ ./cmd/csb-host-run
+
+$(CLIENT_ARM64):
+	GOOS=linux GOARCH=arm64 $(GO_BUILD) -o $@ ./cmd/csb-host-run
+
+$(CLIENT_TAR_XZ): $(CLIENT_AMD64) $(CLIENT_ARM64)
+	tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+	    -cf - -C $(BIN_DIR) csb-host-run.amd64 csb-host-run.arm64 \
+	| xz -9 -c > $@
+
+build-csb: $(CLIENT_TAR_XZ)
+	$(GO_BUILD) -o $(CSB_CLI) ./cmd/csb
 
 # ---------------------------------------------------------------------------
 # Test
 # ---------------------------------------------------------------------------
 
-test: test-go test-py
-
-test-go:
-	go test ./internal/...
-
-test-py:
-	$(PYTEST) src/csb/ -q -m "not docker and not podman and not smoke and not host_exec"
-
-test-smoke: build
-	$(PYTEST) src/csb/ -v -m "smoke and not host_exec"
-
-test-host-exec: build
-	$(PYTEST) src/csb/ -v -m "host_exec"
+test:
+	go test ./...
 
 # ---------------------------------------------------------------------------
 # Clean
 # ---------------------------------------------------------------------------
 
 clean:
-	rm -f $(BROKER) $(BROKER_PKG) $(CLIENT)
+	rm -f $(CLIENT_AMD64) $(CLIENT_ARM64) $(CLIENT_TAR_XZ) $(CSB_CLI)
 	go clean -cache

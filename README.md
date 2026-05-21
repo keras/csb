@@ -16,13 +16,16 @@ Run commands in an isolated container with a persistent home.
 ## Install
 
 ```sh
-uv tool install git+https://github.com/keras/csb
+mise use -g github:keras/csb
 ```
 
-Or run directly without installing:
+Or download a prebuilt binary from the releases page and place it on your `PATH`.
+
+Or clone and build (requires go):
 
 ```sh
-uvx --from git+https://github.com/keras/csb csb [args]
+make build
+cp bin/csb /usr/local/bin
 ```
 
 ## Quick start
@@ -67,7 +70,6 @@ csb-persist ~/.claude      # works for directories too
 
 This moves the path into `/mnt/csb-home` (which is `~/.config/csb/home/` on the host) and replaces it with a symlink. The change is visible immediately on the host and will be picked up as a symlink on the next container start.
 
-
 ## Host-exec bridge
 
 The host-exec bridge lets code running inside the sandbox invoke a allowlisted set of commands on the host, with arguments passed through. This is useful for running commands that need to interact with the host environment or for leveraging host-only resources (e.g. GPU).
@@ -83,14 +85,14 @@ csb-host-run ./cmd "done"
 echo "hello" | csb-host-run ./cmd "cat"
 ```
 
-`csb-host-run` connects over WebSocket to a host-side broker (`csb-host-broker`) that csb starts before launching the container. The broker enforces an allowlist and scrubs the environment before spawning any process — env vars injected into the sandbox (e.g. `GIT_SSH_COMMAND`) are not forwarded to the host process.
+`csb-host-run` connects over WebSocket to a host-side broker that csb starts before launching the container (csb runs as its own broker via an internal mode). The broker enforces an allowlist and scrubs the environment before spawning any process — env vars injected into the sandbox (e.g. `GIT_SSH_COMMAND`) are not forwarded to the host process.
 
 ### Enabling host-exec
 
 Host-exec requires the Go binaries. They are compiled at install time if Go is available; otherwise install succeeds without them and `--host-exec` will print a clear error. To build manually:
 
 ```sh
-make build          # produces bin/csb-host-broker and src/csb/bin/csb-host-run
+make build          # produces bin/csb
 ```
 
 Enable per-invocation with `--host-exec` and specify allowed commands with one or more `--host-exec-allow` flags:
@@ -148,28 +150,28 @@ When any of these happen inside csb, the container and what's mounted there (the
 
 csb is **not** a hardened boundary against deliberately malicious code. When `nested_podman: true`, csb enables the following to support rootless Podman inside the container:
 
-| Flag | Why |
-|------|-----|
-| `--cap-add SYS_ADMIN` | For `newuidmap`/`newgidmap` to write UID maps in the parent user namespace, and `mount --make-rshared` for nested mount propagation |
-| `--cap-add NET_ADMIN` | Writing to `/proc/sys/net/*` in network namespaces Podman creates for inner containers |
-| `--security-opt seccomp=unconfined` | Allows `clone(CLONE_NEWUSER)` and related namespace syscalls |
-| `--security-opt apparmor=unconfined` | Docker's default AppArmor profile blocks `mount(2)` even with `SYS_ADMIN` |
-| `--device /dev/fuse` | fuse-overlayfs storage driver for nested containers |
-| `--device /dev/net/tun` | slirp4netns user-mode networking for nested containers |
+| Flag                                 | Why                                                                                                                                 |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `--cap-add SYS_ADMIN`                | For `newuidmap`/`newgidmap` to write UID maps in the parent user namespace, and `mount --make-rshared` for nested mount propagation |
+| `--cap-add NET_ADMIN`                | Writing to `/proc/sys/net/*` in network namespaces Podman creates for inner containers                                              |
+| `--security-opt seccomp=unconfined`  | Allows `clone(CLONE_NEWUSER)` and related namespace syscalls                                                                        |
+| `--security-opt apparmor=unconfined` | Docker's default AppArmor profile blocks `mount(2)` even with `SYS_ADMIN`                                                           |
+| `--device /dev/fuse`                 | fuse-overlayfs storage driver for nested containers                                                                                 |
+| `--device /dev/net/tun`              | slirp4netns user-mode networking for nested containers                                                                              |
 
 With that combination, a kernel vulnerability in the exposed syscall surface is reachable from inside the container. Do not run untrusted code here — if you need tighter isolation, use a different tool.
 
 ## Environment variables
 
-| Variable | Description |
-|----------|-------------|
-| `CSB_IMAGE` | Override the image name/tag |
-| `CSB_RUNTIME` | Override runtime (`auto`, `docker`, `podman`) |
-| `CSB_BASE_IMAGE` | Override base image |
-| `CSB_NESTED_PODMAN` | Set to `0` to disable nested Podman |
-| `CSB_HOME_VOLUME` | Override home volume name (overrides `home_volume:` in config.yaml, default: `csb-home`) |
-| `CSB_CONFIG_DIR` | Override config directory path (default: `~/.config/csb`) |
-| `CSB_ENV_FORWARD` | Space-separated list of host env var names to forward into the container |
+| Variable            | Description                                                                              |
+| ------------------- | ---------------------------------------------------------------------------------------- |
+| `CSB_IMAGE`         | Override the image name/tag                                                              |
+| `CSB_RUNTIME`       | Override runtime (`auto`, `docker`, `podman`)                                            |
+| `CSB_BASE_IMAGE`    | Override base image                                                                      |
+| `CSB_NESTED_PODMAN` | Set to `0` to disable nested Podman                                                      |
+| `CSB_HOME_VOLUME`   | Override home volume name (overrides `home_volume:` in config.yaml, default: `csb-home`) |
+| `CSB_CONFIG_DIR`    | Override config directory path (default: `~/.config/csb`)                                |
+| `CSB_ENV_FORWARD`   | Space-separated list of host env var names to forward into the container                 |
 
 ## Addons / mise
 

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"syscall"
 
-	"csb-host/internal/proto"
+	"github.com/keras/csb/internal/proto"
 	"github.com/creack/pty"
 	"nhooyr.io/websocket"
 )

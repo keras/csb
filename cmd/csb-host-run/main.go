@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"csb-host/internal/client"
+	"github.com/keras/csb/internal/client"
 )
 
 func main() {

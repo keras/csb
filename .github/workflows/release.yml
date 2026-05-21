@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build csb-host-run (linux/amd64 and linux/arm64)
+        run: |
+          mkdir -p bin
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath \
+            -o bin/csb-host-run.amd64 ./cmd/csb-host-run
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -trimpath \
+            -o bin/csb-host-run.arm64 ./cmd/csb-host-run
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+            -cf - -C bin csb-host-run.amd64 csb-host-run.arm64 \
+          | xz -9 -c > cmd/csb/files/csb-host-run.tar.xz
+
+      - name: Build csb for all platforms
+        run: |
+          mkdir -p dist
+          for os_arch in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            GOOS=${os_arch%/*} GOARCH=${os_arch#*/} CGO_ENABLED=0 \
+              go build -ldflags="-s -w" -trimpath \
+              -o dist/csb-${os_arch%/*}-${os_arch#*/} ./cmd/csb
+          done
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/csb-*

@@ -10,7 +10,7 @@ import (
 	"sync"
 	"syscall"
 
-	"csb-host/internal/proto"
+	"github.com/keras/csb/internal/proto"
 	"nhooyr.io/websocket"
 	"golang.org/x/term"
 )
