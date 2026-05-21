@@ -29,6 +29,14 @@ SCRIPT = str(Path(__file__).parent.parent.parent / "csb")
 CONTAINER_HOME = "/home/sandbox"
 CONTAINER_WORKDIR = "/workspace"
 
+
+def _setup_podman_vfs(home: Path) -> None:
+    """Write the vfs storage.conf so rootless podman works inside Docker."""
+    if _RUNTIME == "podman":
+        cfg_dir = home / ".config" / "containers"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        (cfg_dir / "storage.conf").write_text('[storage]\ndriver = "vfs"\n')
+
 integration = pytest.mark.integration
 live = pytest.mark.integration_live
 
@@ -253,23 +261,14 @@ def test_env_inject_multiple_pairs(integ_env):
 @live
 def test_env_inject_via_yaml(integ_env, tmp_path):
     """env: key in config.yaml injects vars into the container."""
-    uid = uuid4().hex[:8]
-    home = tmp_path / "home"
-    config_dir = home / ".config" / "csb"
+    # Use the session HOME so podman storage is shared (pre-built image is reused).
+    config_dir = tmp_path / "csb-config"
     config_dir.mkdir(parents=True)
     (config_dir / "config.yaml").write_text("env:\n  - CSB_INTEG_YAML_VAR=from_yaml\n")
 
-    r = subprocess.run(
-        [sys.executable, SCRIPT, "--no-tmux", "--no-tty", "--", "sh", "-c", "echo $CSB_INTEG_YAML_VAR"],
-        cwd=str(tmp_path),
-        env={
-            **integ_env.base_env,
-            "HOME": str(home),
-            "CSB_CONFIG_DIR": str(config_dir),
-        },
-        capture_output=True,
-        text=True,
-        timeout=60,
+    r = integ_env.run(
+        "--", "sh", "-c", "echo $CSB_INTEG_YAML_VAR",
+        CSB_CONFIG_DIR=str(config_dir),
     )
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == "from_yaml"
@@ -412,7 +411,9 @@ def test_rebuild_flag_forces_rebuild(integ_env):
     """--rebuild always triggers an image build even when the image already exists."""
     r = integ_env.run("--rebuild", "--verbose", "--", "true")
     assert r.returncode == 0, r.stderr
-    assert "Building" in r.stderr, "Expected 'Building ...' in verbose output after --rebuild"
+    # "Building <image>..." is printed to stdout by the Python runtime
+    output = r.stdout + r.stderr
+    assert "Building" in output, "Expected 'Building ...' in output after --rebuild"
 
 
 @integration
@@ -456,7 +457,7 @@ def test_clean_lists_home_volume_even_when_unlabeled(fresh_env):
 def test_clean_prompts_and_lists_items(integ_env):
     """csb clean lists images and volumes before prompting for confirmation."""
     r = subprocess.run(
-        [sys.executable, SCRIPT, "--no-tmux", "--no-tty", "clean"],
+        [sys.executable, SCRIPT, "clean"],
         cwd=str(integ_env.workspace),
         env=integ_env.base_env,
         capture_output=True,
@@ -465,7 +466,6 @@ def test_clean_prompts_and_lists_items(integ_env):
         input="n\n",
     )
     output = r.stdout + r.stderr
-    # Should show the prompt with listed items.
     assert "Remove all" in output or "Images" in output or "Volumes" in output, (
         f"Expected prompt listing items, got:\n{output}"
     )
@@ -476,7 +476,7 @@ def test_clean_prompts_and_lists_items(integ_env):
 def test_clean_aborts_on_no(integ_env):
     """csb clean does not remove the image when user answers 'n'."""
     r = subprocess.run(
-        [sys.executable, SCRIPT, "--no-tmux", "--no-tty", "clean"],
+        [sys.executable, SCRIPT, "clean"],
         cwd=str(integ_env.workspace),
         env=integ_env.base_env,
         capture_output=True,
@@ -568,30 +568,21 @@ def test_config_edit_workdir_requires_workspace(fresh_env):
 
 @integration
 @live
-def test_cli_flag_beats_yaml_for_env(integ_env, tmp_path):
-    """CLI --env flag is additive on top of YAML env; both are present in container."""
-    uid = uuid4().hex[:8]
-    home = tmp_path / "home"
-    config_dir = home / ".config" / "csb"
+def test_cli_flag_overrides_yaml_for_env(integ_env, tmp_path):
+    """CLI --env flag replaces the YAML env list (CLI wins, no merging)."""
+    config_dir = tmp_path / "csb-config"
     config_dir.mkdir(parents=True)
     (config_dir / "config.yaml").write_text("env:\n  - CSB_LAYER=from_yaml\n")
 
-    r = subprocess.run(
-        [
-            sys.executable, SCRIPT,
-            "--no-tmux", "--no-tty",
-            "--env", "CSB_LAYER_FLAG=from_flag",
-            "--", "sh", "-c", "echo $CSB_LAYER $CSB_LAYER_FLAG",
-        ],
-        cwd=str(tmp_path),
-        env={**integ_env.base_env, "HOME": str(home), "CSB_CONFIG_DIR": str(config_dir)},
-        capture_output=True,
-        text=True,
-        timeout=60,
+    r = integ_env.run(
+        "--env", "CSB_LAYER=from_flag",
+        "--", "sh", "-c", "echo $CSB_LAYER",
+        CSB_CONFIG_DIR=str(config_dir),
     )
     assert r.returncode == 0, r.stderr
-    assert "from_yaml" in r.stdout
-    assert "from_flag" in r.stdout
+    assert r.stdout.strip() == "from_flag", (
+        f"Expected CLI --env to override YAML env, got: {r.stdout.strip()!r}"
+    )
 
 
 @integration
@@ -599,25 +590,16 @@ def test_cli_flag_beats_yaml_for_env(integ_env, tmp_path):
 def test_csb_env_var_beats_yaml_for_home_volume(integ_env, tmp_path):
     """CSB_HOME_VOLUME env var takes precedence over home_volume: in config.yaml."""
     uid = uuid4().hex[:8]
-    home = tmp_path / "home"
-    config_dir = home / ".config" / "csb"
+    config_dir = tmp_path / "csb-config"
     config_dir.mkdir(parents=True)
     override_vol = f"csb-home-override-{uid}"
-    (config_dir / "config.yaml").write_text(f"home_volume: csb-home-should-not-use\n")
+    (config_dir / "config.yaml").write_text("home_volume: csb-home-should-not-use\n")
 
     try:
-        r = subprocess.run(
-            [sys.executable, SCRIPT, "--no-tmux", "--no-tty", "--", "true"],
-            cwd=str(tmp_path),
-            env={
-                **integ_env.base_env,
-                "HOME": str(home),
-                "CSB_CONFIG_DIR": str(config_dir),
-                "CSB_HOME_VOLUME": override_vol,
-            },
-            capture_output=True,
-            text=True,
-            timeout=120,
+        r = integ_env.run(
+            "--", "true",
+            CSB_CONFIG_DIR=str(config_dir),
+            CSB_HOME_VOLUME=override_vol,
         )
         assert r.returncode == 0, r.stderr
         check = subprocess.run(
@@ -637,11 +619,9 @@ def test_workdir_yaml_overrides_user_yaml_in_container(integ_env, tmp_path):
     """Per-workdir config.yaml overrides user config.yaml for the matching key."""
     from .config import _workdir_config_path
 
-    uid = uuid4().hex[:8]
-    home = tmp_path / "home"
     workspace = tmp_path / "myproject"
     workspace.mkdir(parents=True)
-    config_dir = home / ".config" / "csb"
+    config_dir = tmp_path / "csb-config"
     config_dir.mkdir(parents=True)
     (config_dir / "config.yaml").write_text("env:\n  - CSB_LAYER_SOURCE=user_yaml\n")
 
@@ -649,13 +629,10 @@ def test_workdir_yaml_overrides_user_yaml_in_container(integ_env, tmp_path):
     workdir_cfg.parent.mkdir(parents=True, exist_ok=True)
     workdir_cfg.write_text("env:\n  - CSB_LAYER_SOURCE=workdir_yaml\n")
 
-    r = subprocess.run(
-        [sys.executable, SCRIPT, "--no-tmux", "--no-tty", "--", "sh", "-c", "echo $CSB_LAYER_SOURCE"],
-        cwd=str(workspace),
-        env={**integ_env.base_env, "HOME": str(home), "CSB_CONFIG_DIR": str(config_dir)},
-        capture_output=True,
-        text=True,
-        timeout=60,
+    r = integ_env.run(
+        "--", "sh", "-c", "echo $CSB_LAYER_SOURCE",
+        cwd=workspace,
+        CSB_CONFIG_DIR=str(config_dir),
     )
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == "workdir_yaml", (
