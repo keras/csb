@@ -130,7 +130,7 @@ func RunRun(cfg *Config, rt *Runtime, entrypointContent, persistContent []byte) 
 	}
 
 	if cfg.ResetHome {
-		fmt.Printf("Removing home volume %s...\n", cfg.HomeVolume)
+		fmt.Fprintf(os.Stderr, "Removing home volume %s...\n", cfg.HomeVolume)
 		rt.RemoveVolume(cfg.HomeVolume)
 	}
 

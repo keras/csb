@@ -112,7 +112,7 @@ def main(args) -> None:
         return
 
     if cfg.reset_home:
-        print(f"Removing home volume {cfg.home_volume}...")
+        print(f"Removing home volume {cfg.home_volume}...", file=sys.stderr)
         runtime.remove_volume(cfg.home_volume)
 
     if cfg.rebuild or not runtime.image_exists(image_name(cfg)):

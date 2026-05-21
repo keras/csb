@@ -539,14 +539,14 @@ def _init_config_dir(config_dir: Path) -> None:
     """Create config_dir with default template files if it does not exist."""
 
     if not config_dir.exists():
-        print(f"Initialising default config at {config_dir} …")
+        print(f"Initialising default config at {config_dir} …", file=sys.stderr)
 
     for rel, content in CSB_DEFAULT_FILES.items():
         path = config_dir / rel
         if path.exists():
             continue
 
-        print(f"Creating {path} …")
+        print(f"Creating {path} …", file=sys.stderr)
         if content is Directory:
             path.mkdir(parents=True, exist_ok=True)
         else:

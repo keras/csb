@@ -34,7 +34,7 @@ func (r *Runtime) ImageExists(name string) bool {
 
 // BuildImage builds an image from the given tar context.
 func (r *Runtime) BuildImage(name string, context []byte, labels map[string]string, quiet bool) error {
-	fmt.Printf("Building %s...\n", name)
+	fmt.Fprintf(os.Stderr, "Building %s...\n", name)
 	args := []string{"build", "-t", name}
 	// Sort labels for determinism
 	labelKeys := make([]string, 0, len(labels))

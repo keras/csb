@@ -25,7 +25,7 @@ class Runtime:
     def build_image(
         self, name: str, context: bytes, labels: dict[str, str], quiet: bool
     ) -> None:
-        print(f"Building {name}...", flush=True)
+        print(f"Building {name}...", file=sys.stderr, flush=True)
         label_args: list[str] = []
         for k, v in labels.items():
             label_args += ["--label", f"{k}={v}"]

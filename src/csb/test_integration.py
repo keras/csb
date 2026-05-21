@@ -25,7 +25,15 @@ from uuid import uuid4
 
 import pytest
 
-SCRIPT = str(Path(__file__).parent.parent.parent / "csb")
+# Override with CSB_TEST_SCRIPT=/path/to/binary to test a different implementation.
+# When the override is an executable binary (not a .py / no extension script),
+# it is invoked directly without sys.executable as a prefix.
+_SCRIPT_OVERRIDE = os.environ.get("CSB_TEST_SCRIPT")
+SCRIPT = _SCRIPT_OVERRIDE or str(Path(__file__).parent.parent.parent / "csb")
+# Command prefix: bare binary needs no interpreter; Python script needs sys.executable.
+_SCRIPT_CMD: list[str] = (
+    [SCRIPT] if (_SCRIPT_OVERRIDE and os.access(SCRIPT, os.X_OK)) else [sys.executable, SCRIPT]
+)
 CONTAINER_HOME = "/home/sandbox"
 CONTAINER_WORKDIR = "/workspace"
 
@@ -99,7 +107,7 @@ def integ_env(tmp_path_factory):
     ):
         env = {**base_env, **extra_env}
         return subprocess.run(
-            [sys.executable, SCRIPT, "--no-tmux", "--no-tty", *args],
+            [*_SCRIPT_CMD, "--no-tmux", "--no-tty", *args],
             cwd=str(cwd or workspace),
             env=env,
             capture_output=True,
@@ -173,7 +181,7 @@ def fresh_env(tmp_path):
     ):
         env = {**base_env, **extra_env}
         return subprocess.run(
-            [sys.executable, SCRIPT, *args],
+            [*_SCRIPT_CMD, *args],
             cwd=str(cwd or workspace),
             env=env,
             capture_output=True,
@@ -411,9 +419,7 @@ def test_rebuild_flag_forces_rebuild(integ_env):
     """--rebuild always triggers an image build even when the image already exists."""
     r = integ_env.run("--rebuild", "--verbose", "--", "true")
     assert r.returncode == 0, r.stderr
-    # "Building <image>..." is printed to stdout by the Python runtime
-    output = r.stdout + r.stderr
-    assert "Building" in output, "Expected 'Building ...' in output after --rebuild"
+    assert "Building" in r.stderr, "Expected 'Building ...' in stderr after --rebuild"
 
 
 @integration
@@ -457,7 +463,7 @@ def test_clean_lists_home_volume_even_when_unlabeled(fresh_env):
 def test_clean_prompts_and_lists_items(integ_env):
     """csb clean lists images and volumes before prompting for confirmation."""
     r = subprocess.run(
-        [sys.executable, SCRIPT, "clean"],
+        [*_SCRIPT_CMD, "clean"],
         cwd=str(integ_env.workspace),
         env=integ_env.base_env,
         capture_output=True,
@@ -476,7 +482,7 @@ def test_clean_prompts_and_lists_items(integ_env):
 def test_clean_aborts_on_no(integ_env):
     """csb clean does not remove the image when user answers 'n'."""
     r = subprocess.run(
-        [sys.executable, SCRIPT, "clean"],
+        [*_SCRIPT_CMD, "clean"],
         cwd=str(integ_env.workspace),
         env=integ_env.base_env,
         capture_output=True,

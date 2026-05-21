@@ -67,7 +67,7 @@ func renderConfigTemplate() string {
 // InitConfigDir creates the config directory with default files if needed.
 func InitConfigDir(configDir string, miseAddonContent []byte) {
 	if _, err := os.Stat(configDir); os.IsNotExist(err) {
-		fmt.Printf("Initialising default config at %s …\n", configDir)
+		fmt.Fprintf(os.Stderr, "Initialising default config at %s …\n", configDir)
 	}
 
 	files := []struct {
@@ -86,7 +86,7 @@ func InitConfigDir(configDir string, miseAddonContent []byte) {
 			continue // already exists
 		}
 
-		fmt.Printf("Creating %s …\n", path)
+		fmt.Fprintf(os.Stderr, "Creating %s …\n", path)
 		if f.isDir {
 			if err := os.MkdirAll(path, 0755); err != nil {
 				fmt.Fprintf(os.Stderr, "csb: warning: failed to create %s: %v\n", path, err)
