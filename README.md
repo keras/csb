@@ -16,7 +16,7 @@ Run commands in an isolated container with a persistent home.
 ## Install
 
 ```sh
-uv tool install git+https://github.com/keras/csb
+mise use -g github:keras/csb
 ```
 
 Or run directly without installing:
