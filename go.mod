@@ -9,4 +9,7 @@ require (
 	nhooyr.io/websocket v1.8.11
 )
 
-require golang.org/x/sys v0.43.0 // indirect
+require (
+	github.com/ulikunitz/xz v0.5.15 // indirect
+	golang.org/x/sys v0.43.0 // indirect
+)

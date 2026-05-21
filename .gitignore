@@ -3,3 +3,5 @@ __pycache__/
 uv.lock
 .venv/
 bin/
+src/csb/bin/*
+*.xz

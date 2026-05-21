@@ -119,7 +119,7 @@ func RunConfigEdit(cfg *Config) error {
 }
 
 // RunRun executes the main run subcommand.
-func RunRun(cfg *Config, rt *Runtime, entrypointContent, persistContent []byte) error {
+func RunRun(cfg *Config, rt *Runtime, entrypointContent, persistContent, hostRunAmd64XZ, hostRunArm64XZ []byte) error {
 	// Validate addons exist
 	for _, name := range cfg.Addons {
 		addonPath := filepath.Join(cfg.ConfigDir, "addons", name+".sh")
@@ -134,10 +134,10 @@ func RunRun(cfg *Config, rt *Runtime, entrypointContent, persistContent []byte) 
 		rt.RemoveVolume(cfg.HomeVolume)
 	}
 
-	imgName := ImageName(cfg, string(entrypointContent), string(persistContent))
+	imgName := ImageName(cfg, string(entrypointContent), string(persistContent), hostRunAmd64XZ, hostRunArm64XZ)
 
 	if cfg.Rebuild || !rt.ImageExists(imgName) {
-		contextTar, err := BuildContextTar(cfg, entrypointContent, persistContent)
+		contextTar, err := BuildContextTar(cfg, entrypointContent, persistContent, hostRunAmd64XZ, hostRunArm64XZ)
 		if err != nil {
 			return fmt.Errorf("building context: %w", err)
 		}

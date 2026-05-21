@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -155,33 +155,10 @@ func (r *Runtime) ExecRun(argv []string) error {
 	return syscall.Exec(path, argv, os.Environ())
 }
 
-// findBrokerBin locates the csb-host-broker binary.
-func findBrokerBin() string {
-	// 1. In PATH
-	if p, err := exec.LookPath("csb-host-broker"); err == nil {
-		return p
-	}
 
-	// 2. Same directory as current executable (pkg layout)
-	exe, err := os.Executable()
-	if err == nil {
-		exe, _ = filepath.EvalSymlinks(exe)
-		binDir := filepath.Dir(exe)
-		p := filepath.Join(binDir, "csb-host-broker")
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-		// dev layout: bin/ sibling of the exe directory
-		p = filepath.Join(binDir, "..", "bin", "csb-host-broker")
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-
-	return ""
-}
-
-// containerGatewayIP returns the host IP on the container bridge network (Linux only).
+// containerGatewayIP returns the host IP on the container bridge network (Linux only),
+// but only if that IP is actually bound to a local interface (so the broker can bind to it).
+// Returns "" when the gateway is not a local address (e.g. rootless podman with slirp4netns).
 func containerGatewayIP(containerCLI string) string {
 	if runtime.GOOS == "darwin" {
 		return "" // Docker Desktop handles host.docker.internal
@@ -199,24 +176,29 @@ func containerGatewayIP(containerCLI string) string {
 		return ""
 	}
 	ip := strings.TrimSpace(string(out))
+	if ip == "" {
+		return ""
+	}
+	// Verify the IP is actually bindable on this host (not just a virtual gateway).
+	ln, err := net.Listen("tcp", ip+":0")
+	if err != nil {
+		return ""
+	}
+	ln.Close()
 	return ip
 }
 
-// StartHostExec starts the csb-host-broker and returns (cmd, wsURL, token, error).
+// StartHostExec starts the broker (embedded in this binary via CSB_HOST_BROKER_MODE)
+// and returns (cmd, wsURL, token, error).
 func StartHostExec(allowRules []string, bind string, containerCLI string) (*exec.Cmd, string, string, error) {
-	brokerBin := findBrokerBin()
-	if brokerBin == "" {
-		return nil, "", "", fmt.Errorf(
-			"error: --host-exec requires the csb-host-broker binary, which was not found.\n" +
-				"Install Go and run:  make build\n" +
-				"Then reinstall csb or keep the binaries on PATH.",
-		)
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, "", "", fmt.Errorf("locating csb executable: %w", err)
 	}
 
 	gatewayIP := containerGatewayIP(containerCLI)
 	actualBind := bind
 	if gatewayIP != "" {
-		// Bind only to the container network interface
 		parts := strings.Split(bind, ":")
 		portPart := parts[len(parts)-1]
 		actualBind = gatewayIP + ":" + portPart
@@ -227,7 +209,8 @@ func StartHostExec(allowRules []string, bind string, containerCLI string) (*exec
 		args = append(args, "--allow", rule)
 	}
 
-	cmd := exec.Command(brokerBin, args...)
+	cmd := exec.Command(exe, args...)
+	cmd.Env = append(os.Environ(), "CSB_HOST_BROKER_MODE=1")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, "", "", fmt.Errorf("creating stdout pipe: %w", err)

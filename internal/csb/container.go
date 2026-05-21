@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/ulikunitz/xz"
 )
 
 // Base packages for the container image.
@@ -128,59 +130,31 @@ func MakeDockerfile(baseImage string, nestedPodman bool, hostRunHash string) str
 	return sb.String()
 }
 
-// hostRunBinaryPath finds the csb-host-run binary for the current architecture.
-// It looks in the same directory as the current binary, then bin/ relative to it.
-func hostRunBinaryPath() string {
-	exe, err := os.Executable()
+// decompressXZ decompresses an xz-compressed byte slice.
+func decompressXZ(compressed []byte) ([]byte, error) {
+	r, err := xz.NewReader(bytes.NewReader(compressed))
 	if err != nil {
-		return ""
+		return nil, err
 	}
-	exe, err = filepath.EvalSymlinks(exe)
-	if err != nil {
-		return ""
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		return nil, err
 	}
-	binDir := filepath.Dir(exe)
-
-	arch := "amd64"
-	if runtime.GOARCH == "arm64" {
-		arch = "arm64"
-	}
-
-	candidates := []string{
-		filepath.Join(binDir, fmt.Sprintf("csb-host-run.%s", arch)),
-		filepath.Join(binDir, "csb-host-run"),
-		// dev layout: repo-root/bin/csb-host-run
-		filepath.Join(binDir, "..", "bin", fmt.Sprintf("csb-host-run.%s", arch)),
-		filepath.Join(binDir, "..", "bin", "csb-host-run"),
-	}
-
-	for _, p := range candidates {
-		// Resolve symlinks
-		resolved, err := filepath.EvalSymlinks(p)
-		if err == nil {
-			if _, statErr := os.Stat(resolved); statErr == nil {
-				return resolved
-			}
-		}
-		if _, statErr := os.Stat(p); statErr == nil {
-			return p
-		}
-	}
-	return ""
+	return buf.Bytes(), nil
 }
 
-// hostRunHash returns SHA256 of csb-host-run binary, or "".
-func hostRunHash() string {
-	p := hostRunBinaryPath()
-	if p == "" {
-		return ""
+// hostRunBytes returns the decompressed csb-host-run binary for the host
+// architecture selected from the embedded xz payloads. Returns nil if both
+// payloads are empty (e.g. in tests that pass nil).
+func hostRunBytes(amd64XZ, arm64XZ []byte) ([]byte, error) {
+	compressed := amd64XZ
+	if runtime.GOARCH == "arm64" {
+		compressed = arm64XZ
 	}
-	data, err := os.ReadFile(p)
-	if err != nil {
-		return ""
+	if len(compressed) == 0 {
+		return nil, nil
 	}
-	sum := sha256.Sum256(data)
-	return fmt.Sprintf("%x", sum)
+	return decompressXZ(compressed)
 }
 
 // addonScripts returns sorted list of addon script paths that are enabled.
@@ -211,11 +185,16 @@ func addonScripts(cfg *Config) []string {
 }
 
 // ImageName returns the image name to use for the given config.
-func ImageName(cfg *Config, entrypointContent, persistContent string) string {
+func ImageName(cfg *Config, entrypointContent, persistContent string, hostRunAmd64XZ, hostRunArm64XZ []byte) string {
 	if cfg.Image != "" {
 		return cfg.Image
 	}
-	hrh := hostRunHash()
+
+	var hrh string
+	if data, err := hostRunBytes(hostRunAmd64XZ, hostRunArm64XZ); err == nil && len(data) > 0 {
+		sum := sha256.Sum256(data)
+		hrh = fmt.Sprintf("%x", sum)
+	}
 	dockerfile := MakeDockerfile(cfg.BaseImage, cfg.NestedPodman, hrh)
 
 	var addonContent strings.Builder
@@ -231,8 +210,16 @@ func ImageName(cfg *Config, entrypointContent, persistContent string) string {
 }
 
 // BuildContextTar creates an in-memory tar archive for docker build.
-func BuildContextTar(cfg *Config, entrypointContent, persistContent []byte) ([]byte, error) {
-	hrh := hostRunHash()
+func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunAmd64XZ, hostRunArm64XZ []byte) ([]byte, error) {
+	hostRunData, err := hostRunBytes(hostRunAmd64XZ, hostRunArm64XZ)
+	if err != nil {
+		return nil, fmt.Errorf("decompressing csb-host-run: %w", err)
+	}
+	var hrh string
+	if len(hostRunData) > 0 {
+		sum := sha256.Sum256(hostRunData)
+		hrh = fmt.Sprintf("%x", sum)
+	}
 	dockerfile := MakeDockerfile(cfg.BaseImage, cfg.NestedPodman, hrh)
 
 	buf := &bytes.Buffer{}
@@ -307,17 +294,10 @@ func BuildContextTar(cfg *Config, entrypointContent, persistContent []byte) ([]b
 		}
 	}
 
-	// csb-host-run binary if present
-	if hrh != "" {
-		binPath := hostRunBinaryPath()
-		if binPath != "" {
-			data, err := os.ReadFile(binPath)
-			if err != nil {
-				return nil, fmt.Errorf("reading csb-host-run: %w", err)
-			}
-			if err := addFile("csb/csb-host-run", data, 0755); err != nil {
-				return nil, err
-			}
+	// csb-host-run binary (embedded, already decompressed above)
+	if len(hostRunData) > 0 {
+		if err := addFile("csb/csb-host-run", hostRunData, 0755); err != nil {
+			return nil, err
 		}
 	}
 

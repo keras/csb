@@ -181,7 +181,17 @@ def _container_gateway_ip(container_cli: str) -> str | None:
             )
         ip = result.stdout.strip()
         if result.returncode == 0 and ip:
-            return ip
+            # Verify the IP is actually bindable on this host.
+            # Rootless podman with slirp4netns reports a virtual gateway that
+            # doesn't correspond to any real host interface.
+            import socket
+            try:
+                s = socket.socket()
+                s.bind((ip, 0))
+                s.close()
+                return ip
+            except OSError:
+                return None
     except Exception:
         pass
     return None
