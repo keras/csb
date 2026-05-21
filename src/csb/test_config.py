@@ -7,6 +7,7 @@ import pytest
 from .config import (
     CSB_DEFAULT_FILES,
     OPTIONS,
+    _PACKAGED_MISE_SH,
     _format_help_full,
     _init_config_dir,
     _parse_publish,
@@ -84,6 +85,13 @@ class TestInitConfigDir:
         sentinel.write_text("tmux: true\n")
         _init_config_dir(config_dir)
         assert sentinel.read_text() == "tmux: true\n"
+
+    def test_seeds_mise_addon_on_first_init(self, tmp_path):
+        config_dir = tmp_path / "csb"
+        _init_config_dir(config_dir)
+        addon = config_dir / "addons" / "mise.sh"
+        assert addon.exists()
+        assert addon.read_text() == _PACKAGED_MISE_SH
 
 
 class TestConfigDirOverride:
@@ -398,6 +406,33 @@ class TestCleanSubcommand:
         cfg = parse_args(["-v", "clean"])
         assert cfg.subcommand == "clean"
         assert cfg.verbose is True
+
+
+class TestAddonValidation:
+    def test_unknown_addon_exits(self, tmp_path, monkeypatch):
+        """Addon names not found in config_dir/addons/ cause main() to exit."""
+        import csb
+        home = tmp_path / "home"
+        config_dir = home / ".config" / "csb"
+        config_dir.mkdir(parents=True)
+        (config_dir / "addons").mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+        # main() exits with code 2 when addon script is missing
+        with pytest.raises(SystemExit) as exc_info:
+            csb.main(["--no-workspace", "--no-tmux", "--no-tty", "--addon", "nonexistent"])
+        assert exc_info.value.code == 2
+
+    def test_known_addon_accepted(self, tmp_path, monkeypatch):
+        """parse_args succeeds when the addon name is syntactically valid; the file check is in main()."""
+        home = tmp_path / "home"
+        config_dir = home / ".config" / "csb"
+        (config_dir / "addons").mkdir(parents=True)
+        (config_dir / "addons" / "myaddon.sh").write_text("#!/bin/bash\n")
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+        cfg = parse_args(["--no-workspace", "--no-tmux", "--no-tty", "--addon", "myaddon"])
+        assert "myaddon" in cfg.addons
 
 
 class TestSubcommandDetection:

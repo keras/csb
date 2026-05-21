@@ -13,7 +13,6 @@ from typing import Any
 
 import yaml
 
-
 CONTAINER_HOME = "/home/sandbox"
 CONTAINER_WORKDIR = "/workspace"
 
@@ -84,7 +83,9 @@ class Mount:
 
 # Validators ----------------------------------------------------------------
 
-_ADDONS_DIR = Path(__file__).parent / "addons"
+
+def _addons_dir(config_dir: Path) -> Path:
+    return config_dir / "addons"
 
 
 def _parse_mount(entry: str) -> Mount:
@@ -110,14 +111,6 @@ def _parse_mount(entry: str) -> Mount:
     elif dst == "~":
         dst = CONTAINER_HOME
     return Mount(src, dst, readonly=readonly)
-
-
-def _check_addon(name: str) -> str:
-    """Verify that an addon script exists in the packaged addons directory."""
-    path = _ADDONS_DIR / f"{name}.sh"
-    if not path.exists():
-        raise ValueError(f"addon not found: {name}")
-    return name
 
 
 def regex_validator(pattern: str, error_template: str) -> Callable[[str], str]:
@@ -176,10 +169,10 @@ def _validate_env_pair(val: str) -> str:
 _PORT_RE = re.compile(
     r"^(?:"
     r"(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-fA-F:]+\]):"  # host_ip (v4 or [v6]) followed by :
-    r"(?:\d+(?:-\d+)?)?:"                                # host_port (may be empty for auto-assign)
-    r"|(?:\d+(?:-\d+)?):"                                # or just host_port:
+    r"(?:\d+(?:-\d+)?)?:"  # host_port (may be empty for auto-assign)
+    r"|(?:\d+(?:-\d+)?):"  # or just host_port:
     r")?"
-    r"\d+(?:-\d+)?"                                      # container_port (required)
+    r"\d+(?:-\d+)?"  # container_port (required)
     r"(?:/(?:tcp|udp|sctp))?$"
 )
 
@@ -263,7 +256,6 @@ OPTIONS: list[OptionSpec] = [
         flag="--addon",
         yaml_key=("addons",),
         help="addon to install (repeatable; default: mise)",
-        validator=_check_addon,
         yaml_example="[mise]",
     ),
     OptionSpec(
@@ -343,7 +335,7 @@ OPTIONS: list[OptionSpec] = [
         default=[],
         flag="--host-exec-allow",
         yaml_key=("host_exec_allow",),
-        help="allowed host command pattern, repeatable (e.g. \"open *\", \"git log **\")",
+        help='allowed host command pattern, repeatable (e.g. "open *", "git log **")',
         yaml_example='["open *", "git log **"]',
     ),
     OptionSpec(
@@ -372,7 +364,9 @@ class Config:
     rebuild: bool = False
     reset_home: bool = False
     verbose: bool = False
-    config_edit_target: str | None = None  # "user" or "workdir" for config-edit subcommand
+    config_edit_target: str | None = (
+        None  # "user" or "workdir" for config-edit subcommand
+    )
     passthrough_args: list[str] = field(default_factory=list)
 
     # Registered options — defaults mirror OPTIONS for direct Config() construction
@@ -393,7 +387,6 @@ class Config:
     host_exec_enabled: bool = False
     host_exec_allow: list[str] = field(default_factory=list)
     host_exec_bind: str = "0.0.0.0:0"
-
     def __post_init__(self) -> None:
         if self.config_dir is None:
             self.config_dir = self.home / ".config" / "csb"
@@ -505,10 +498,13 @@ def _format_help_full() -> str:
 
 Directory = object()
 
+_PACKAGED_MISE_SH = (Path(__file__).parent / "addons" / "mise.sh").read_text()
+
 # Relative paths (from ~/.config/csb) → default file contents.
 CSB_DEFAULT_FILES: dict[str, Any] = {
     "config.yaml": _render_template(),
     "home": Directory,  # empty dir for bind-mounting into container home
+    "addons/mise.sh": _PACKAGED_MISE_SH,
 }
 
 
@@ -541,13 +537,15 @@ def _load_workdir_config(config_dir: Path, workspace: Path) -> dict:
 
 def _init_config_dir(config_dir: Path) -> None:
     """Create config_dir with default template files if it does not exist."""
-    if config_dir.exists():
-        return
 
-    print(f"Initialising default config at {config_dir} …")
+    if not config_dir.exists():
+        print(f"Initialising default config at {config_dir} …")
 
     for rel, content in CSB_DEFAULT_FILES.items():
         path = config_dir / rel
+        if path.exists():
+            continue
+
         print(f"Creating {path} …")
         if content is Directory:
             path.mkdir(parents=True, exist_ok=True)

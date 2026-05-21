@@ -28,7 +28,14 @@ def _tar_members(cfg: Config) -> list[tarfile.TarInfo]:
 def _cfg(tmp_path: Path, **kwargs) -> Config:
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
-    return Config(cwd=home, home=home, **kwargs)
+    cfg = Config(cwd=home, home=home, **kwargs)
+    return cfg
+
+
+def _seed_addon(cfg: Config, name: str, content: str = "#!/bin/bash\n") -> None:
+    addons_dir = cfg.config_dir / "addons"
+    addons_dir.mkdir(parents=True, exist_ok=True)
+    (addons_dir / f"{name}.sh").write_text(content)
 
 
 class TestDockerfile:
@@ -58,6 +65,7 @@ class TestBuildContext:
 
     def test_mise_addon_in_tar_when_enabled(self, tmp_path):
         cfg = _cfg(tmp_path, addons=["mise"])
+        _seed_addon(cfg, "mise")
         names = [m.name for m in _tar_members(cfg)]
         assert "csb/build.d/mise.sh" in names
 
@@ -68,6 +76,7 @@ class TestBuildContext:
 
     def test_mise_addon_is_executable(self, tmp_path):
         cfg = _cfg(tmp_path, addons=["mise"])
+        _seed_addon(cfg, "mise")
         members = {m.name: m for m in _tar_members(cfg)}
         assert members["csb/build.d/mise.sh"].mode & 0o111 != 0
 
@@ -85,6 +94,7 @@ class TestBuildContext:
 class TestImageName:
     def test_image_name_differs_with_addons(self, tmp_path):
         cfg_with = _cfg(tmp_path, addons=["mise"], nested_podman=False)
+        _seed_addon(cfg_with, "mise", "#!/bin/bash\necho mise\n")
         cfg_without = _cfg(tmp_path, addons=[], nested_podman=False)
         assert image_name(cfg_with) != image_name(cfg_without)
 

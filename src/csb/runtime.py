@@ -5,6 +5,7 @@ import os
 import select
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -21,29 +22,48 @@ class Runtime:
             == 0
         )
 
-    def build_image(self, name: str, context: bytes, labels: dict[str, str], quiet: bool) -> None:
+    def build_image(
+        self, name: str, context: bytes, labels: dict[str, str], quiet: bool
+    ) -> None:
         print(f"Building {name}...")
         label_args: list[str] = []
         for k, v in labels.items():
             label_args += ["--label", f"{k}={v}"]
-        run_kwargs: dict = {}
-        if quiet:
-            run_kwargs["stdout"] = subprocess.DEVNULL
-            run_kwargs["stderr"] = subprocess.DEVNULL
-        subprocess.run(
-            [self.cli, "build", "-t", name, *label_args, "-"],
-            input=context,
-            check=True,
-            **run_kwargs,
-        )
+        if not quiet:
+            result = subprocess.run(
+                [self.cli, "build", "-t", name, *label_args, "-"],
+                input=context,
+            )
+        else:
+            result = subprocess.run(
+                [self.cli, "build", "-t", name, *label_args, "-"],
+                input=context,
+                capture_output=True,
+            )
+        if result.returncode != 0:
+            if quiet:
+                if result.stdout:
+                    sys.stdout.buffer.write(result.stdout)
+                if result.stderr:
+                    sys.stderr.buffer.write(result.stderr)
+            raise SystemExit(f"Build failed (exit {result.returncode})")
 
     def list_csb_image_ids(self) -> list[str]:
         result = subprocess.run(
-            [self.cli, "images", "--filter", "label=csb.managed=true", "--format", "{{.ID}}"],
+            [
+                self.cli,
+                "images",
+                "--filter",
+                "label=csb.managed=true",
+                "--format",
+                "{{.ID}}",
+            ],
             capture_output=True,
             text=True,
         )
-        return list(dict.fromkeys(result.stdout.split())) if result.returncode == 0 else []
+        return (
+            list(dict.fromkeys(result.stdout.split())) if result.returncode == 0 else []
+        )
 
     def remove_images(self, ids: list[str]) -> None:
         subprocess.run([self.cli, "rmi", "-f", *ids], check=False)
@@ -54,10 +74,13 @@ class Runtime:
         Volume labels can only be set at creation time, so we skip creation
         when the volume already exists rather than recreating it.
         """
-        exists = subprocess.run(
-            [self.cli, "volume", "inspect", name],
-            capture_output=True,
-        ).returncode == 0
+        exists = (
+            subprocess.run(
+                [self.cli, "volume", "inspect", name],
+                capture_output=True,
+            ).returncode
+            == 0
+        )
         if exists:
             return
         label_args: list[str] = []
@@ -72,11 +95,23 @@ class Runtime:
     def list_csb_volumes(self) -> list[str]:
         """Return names of all volumes carrying the csb.managed=true label."""
         result = subprocess.run(
-            [self.cli, "volume", "ls", "--filter", "label=csb.managed=true", "--format", "{{.Name}}"],
+            [
+                self.cli,
+                "volume",
+                "ls",
+                "--filter",
+                "label=csb.managed=true",
+                "--format",
+                "{{.Name}}",
+            ],
             capture_output=True,
             text=True,
         )
-        return [n for n in result.stdout.splitlines() if n] if result.returncode == 0 else []
+        return (
+            [n for n in result.stdout.splitlines() if n]
+            if result.returncode == 0
+            else []
+        )
 
     def remove_volume(self, name: str) -> None:
         subprocess.run(
@@ -112,20 +147,37 @@ def host_exec_available() -> bool:
 def _container_gateway_ip(container_cli: str) -> str | None:
     """Return the host IP on the container bridge network (Linux only), or None."""
     import sys
+
     if sys.platform == "darwin":
         return None  # Docker Desktop routes host.docker.internal through the VM
     try:
         if container_cli == "podman":
             result = subprocess.run(
-                ["podman", "network", "inspect", "podman",
-                 "--format", "{{range .Subnets}}{{.Gateway}}{{end}}"],
-                capture_output=True, text=True, timeout=5,
+                [
+                    "podman",
+                    "network",
+                    "inspect",
+                    "podman",
+                    "--format",
+                    "{{range .Subnets}}{{.Gateway}}{{end}}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
         else:
             result = subprocess.run(
-                ["docker", "network", "inspect", "bridge",
-                 "--format", "{{(index .IPAM.Config 0).Gateway}}"],
-                capture_output=True, text=True, timeout=5,
+                [
+                    "docker",
+                    "network",
+                    "inspect",
+                    "bridge",
+                    "--format",
+                    "{{(index .IPAM.Config 0).Gateway}}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
         ip = result.stdout.strip()
         if result.returncode == 0 and ip:

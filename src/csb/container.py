@@ -129,9 +129,6 @@ printf 'Persisted: %s -> %s\\n' "$src" "$dst"
 """
 
 
-_ADDONS_DIR = Path(__file__).parent / "addons"
-
-
 _BASE_PACKAGES = frozenset(
     {
         "sudo",
@@ -269,7 +266,8 @@ CMD ["bash"]
 
 def _addon_scripts(cfg: Config) -> list[Path]:
     """Return addon scripts from addons/ that are enabled by cfg.addons, in sorted order."""
-    return sorted(p for p in _ADDONS_DIR.glob("*.sh") if p.stem in cfg.addons)
+    addons_dir = cfg.config_dir / "addons"
+    return sorted(p for p in addons_dir.glob("*.sh") if p.stem in cfg.addons)
 
 
 def image_name(cfg: Config) -> str:
