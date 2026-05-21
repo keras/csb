@@ -11,9 +11,9 @@ import (
 	"net/http"
 	"os"
 
-	"csb-host/internal/allowlist"
-	"csb-host/internal/broker"
-	"csb-host/internal/csb"
+	"github.com/keras/csb/internal/allowlist"
+	"github.com/keras/csb/internal/broker"
+	"github.com/keras/csb/internal/csb"
 )
 
 //go:embed files/entrypoint.sh

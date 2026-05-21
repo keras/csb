@@ -4,8 +4,8 @@ import (
 	"context"
 	"net/http"
 
-	"csb-host/internal/allowlist"
-	"csb-host/internal/proto"
+	"github.com/keras/csb/internal/allowlist"
+	"github.com/keras/csb/internal/proto"
 
 	"nhooyr.io/websocket"
 )

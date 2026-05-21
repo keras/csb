@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"csb-host/internal/allowlist"
-	"csb-host/internal/broker"
-	"csb-host/internal/client"
+	"github.com/keras/csb/internal/allowlist"
+	"github.com/keras/csb/internal/broker"
+	"github.com/keras/csb/internal/client"
 )
 
 // setup starts a real broker httptest.Server with the given rules and returns

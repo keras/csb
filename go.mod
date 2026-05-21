@@ -1,4 +1,4 @@
-module csb-host
+module github.com/keras/csb
 
 go 1.25.0
 

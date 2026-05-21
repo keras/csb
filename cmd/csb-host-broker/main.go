@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"os"
 
-	"csb-host/internal/allowlist"
-	"csb-host/internal/broker"
+	"github.com/keras/csb/internal/allowlist"
+	"github.com/keras/csb/internal/broker"
 )
 
 type allowFlags []string

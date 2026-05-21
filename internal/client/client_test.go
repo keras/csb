@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"csb-host/internal/proto"
+	"github.com/keras/csb/internal/proto"
 	"nhooyr.io/websocket"
 )
 
