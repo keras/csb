@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"text/template"
 
 	"github.com/ulikunitz/xz"
 )
@@ -83,51 +84,75 @@ func aptPackages(nestedPodman bool) []string {
 	return pkgs
 }
 
+var dockerfileTemplate = template.Must(template.New("dockerfile").Parse(`FROM {{.BaseImage}}
+
+RUN apt-get update && apt-get install -y \
+    {{.PkgLine}} \
+    && rm -rf /var/lib/apt/lists/* \
+    && echo "sandbox ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/sandbox \
+    && chmod 0440 /etc/sudoers.d/sandbox
+{{if .NestedPodman}}
+COPY containers /etc/containers
+{{end}}
+# Shell setup
+RUN printf '\n[ -f /usr/share/bash-completion/bash_completion ] && . /usr/share/bash-completion/bash_completion\n' \
+    >> /etc/bash.bashrc \
+    {{.PodmanAlias}}
+
+RUN mkdir -p /etc/csb/entrypoint.d
+
+COPY csb/build.d /tmp/build.d
+RUN for script in /tmp/build.d/*.sh; do \
+        [ -x "$script" ] && "$script"; \
+    done && rm -rf /tmp/build.d
+
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 EDITOR=nano CSB_HOME=/home/sandbox
+
+RUN mkdir -p $CSB_HOME {{.Workdir}} /mnt/csb-home && chmod 777 {{.Workdir}} /mnt/csb-home
+
+COPY csb/csb-persist /usr/local/bin/csb-persist
+RUN chmod +x /usr/local/bin/csb-persist
+{{- if .HostRunHash}}
+
+# csb-host-run sha256:{{.HostRunHash}}
+COPY csb/csb-host-run /usr/local/bin/csb-host-run
+RUN chmod +x /usr/local/bin/csb-host-run
+{{- end}}
+
+# Entrypoint
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]
+`))
+
 // MakeDockerfile generates the Dockerfile for the given configuration.
 func MakeDockerfile(baseImage string, nestedPodman bool, hostRunHash string) string {
-	packages := aptPackages(nestedPodman)
-	pkgLine := strings.Join(packages, " ")
-
 	podmanAlias := "&& true"
-	podmanConfigCopy := ""
 	if nestedPodman {
 		podmanAlias = `&& printf '\nalias docker=podman\n' >> /etc/bash.bashrc`
-		podmanConfigCopy = "\nCOPY containers /etc/containers\n"
 	}
-
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("FROM %s\n", baseImage))
-	sb.WriteString("\n")
-	sb.WriteString(fmt.Sprintf("RUN apt-get update && apt-get install -y \\\n    %s \\\n    && rm -rf /var/lib/apt/lists/* \\\n    && echo \"sandbox ALL=(ALL) NOPASSWD:ALL\" > /etc/sudoers.d/sandbox \\\n    && chmod 0440 /etc/sudoers.d/sandbox\n", pkgLine))
-	sb.WriteString("\n")
-	sb.WriteString(podmanConfigCopy)
-	sb.WriteString("\n# Shell setup\n")
-	sb.WriteString(fmt.Sprintf("RUN printf '\\n[ -f /usr/share/bash-completion/bash_completion ] && . /usr/share/bash-completion/bash_completion\\n' \\\n    >> /etc/bash.bashrc \\\n    %s\n", podmanAlias))
-	sb.WriteString("\n")
-	sb.WriteString("RUN mkdir -p /etc/csb/entrypoint.d\n")
-	sb.WriteString("\n")
-	sb.WriteString("COPY csb/build.d /tmp/build.d\n")
-	sb.WriteString("RUN for script in /tmp/build.d/*.sh; do \\\n        [ -x \"$script\" ] && \"$script\"; \\\n    done && rm -rf /tmp/build.d\n")
-	sb.WriteString("\n")
-	sb.WriteString("ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 EDITOR=nano CSB_HOME=/home/sandbox\n")
-	sb.WriteString("\n")
-	sb.WriteString(fmt.Sprintf("RUN mkdir -p $CSB_HOME %s /mnt/csb-home && chmod 777 %s /mnt/csb-home\n", ContainerWorkdir, ContainerWorkdir))
-	sb.WriteString("\n")
-	sb.WriteString("COPY csb/csb-persist /usr/local/bin/csb-persist\n")
-	sb.WriteString("RUN chmod +x /usr/local/bin/csb-persist\n")
-	if hostRunHash != "" {
-		sb.WriteString(fmt.Sprintf("\n# csb-host-run sha256:%s\n", hostRunHash))
-		sb.WriteString("COPY csb/csb-host-run /usr/local/bin/csb-host-run\n")
-		sb.WriteString("RUN chmod +x /usr/local/bin/csb-host-run\n")
+	data := struct {
+		BaseImage    string
+		PkgLine      string
+		NestedPodman bool
+		PodmanAlias  string
+		Workdir      string
+		HostRunHash  string
+	}{
+		BaseImage:    baseImage,
+		PkgLine:      strings.Join(aptPackages(nestedPodman), " "),
+		NestedPodman: nestedPodman,
+		PodmanAlias:  podmanAlias,
+		Workdir:      ContainerWorkdir,
+		HostRunHash:  hostRunHash,
 	}
-	sb.WriteString("\n# Entrypoint\n")
-	sb.WriteString("COPY entrypoint.sh /entrypoint.sh\n")
-	sb.WriteString("RUN chmod +x /entrypoint.sh\n")
-	sb.WriteString("\n")
-	sb.WriteString("ENTRYPOINT [\"/entrypoint.sh\"]\n")
-	sb.WriteString("CMD [\"bash\"]\n")
-
-	return sb.String()
+	var buf bytes.Buffer
+	if err := dockerfileTemplate.Execute(&buf, data); err != nil {
+		panic(fmt.Sprintf("dockerfile template: %v", err))
+	}
+	return buf.String()
 }
 
 // decompressXZ decompresses an xz-compressed byte slice.
@@ -253,36 +278,21 @@ func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarX
 		return err
 	}
 
-	// Dockerfile
-	if err := addFile("Dockerfile", []byte(dockerfile), 0644); err != nil {
-		return nil, err
+	type contextFile struct {
+		name string
+		mode int64
+		data []byte
 	}
-
-	// entrypoint.sh
-	if err := addFile("entrypoint.sh", entrypointContent, 0644); err != nil {
-		return nil, err
-	}
-
-	// csb/csb-persist
-	if err := addFile("csb/csb-persist", persistContent, 0755); err != nil {
-		return nil, err
-	}
-
-	// Static context files
-	staticFiles := map[string]string{
-		"containers/policy.json":     containersPolicy,
-		"containers/registries.conf": containersRegistries,
-		"containers/storage.conf":    containersStorage,
-		"containers/containers.conf": containersContainers,
-	}
-	// Sort for determinism
-	staticKeys := make([]string, 0, len(staticFiles))
-	for k := range staticFiles {
-		staticKeys = append(staticKeys, k)
-	}
-	sort.Strings(staticKeys)
-	for _, k := range staticKeys {
-		if err := addFile(k, []byte(staticFiles[k]), 0644); err != nil {
+	for _, f := range []contextFile{
+		{"Dockerfile",                    0644, []byte(dockerfile)},
+		{"entrypoint.sh",                 0644, entrypointContent},
+		{"csb/csb-persist",               0755, persistContent},
+		{"containers/policy.json",        0644, []byte(containersPolicy)},
+		{"containers/registries.conf",    0644, []byte(containersRegistries)},
+		{"containers/storage.conf",       0644, []byte(containersStorage)},
+		{"containers/containers.conf",    0644, []byte(containersContainers)},
+	} {
+		if err := addFile(f.name, f.data, f.mode); err != nil {
 			return nil, err
 		}
 	}

@@ -82,18 +82,12 @@ csb --host-exec \
 
 csb-host-run make run
 csb-host-run ./cmd "done"
-echo "hello" | csb-host-run ./cmd "cat"
+echo "hello" | csb-host-run ./cmd ...
 ```
 
 `csb-host-run` connects over WebSocket to a host-side broker that csb starts before launching the container (csb runs as its own broker via an internal mode). The broker enforces an allowlist and scrubs the environment before spawning any process — env vars injected into the sandbox (e.g. `GIT_SSH_COMMAND`) are not forwarded to the host process.
 
 ### Enabling host-exec
-
-Host-exec requires the Go binaries. They are compiled at install time if Go is available; otherwise install succeeds without them and `--host-exec` will print a clear error. To build manually:
-
-```sh
-make build          # produces bin/csb
-```
 
 Enable per-invocation with `--host-exec` and specify allowed commands with one or more `--host-exec-allow` flags:
 
