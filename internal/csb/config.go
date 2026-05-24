@@ -92,23 +92,7 @@ type Config struct {
 	ConfigEditTarget string // "user" or "workdir"
 	PassthroughArgs  []string
 
-	// Registered options
-	UseTmux        bool
-	UseTTY         bool
-	Mount          []Mount
-	Runtime        string
-	BaseImage      string
-	NestedPodman   bool
-	Addons         []string
-	HomeVolume     string
-	Image          string
-	EnvForward     []string
-	EnvInject      []string
-	Publish        []string
-	HostNetwork    bool
-	HostExecEnabled bool
-	HostExecAllow  []string
-	HostExecBind   string
+	Options
 }
 
 // ContainerCLI resolves the container runtime ("docker" or "podman").

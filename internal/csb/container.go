@@ -284,13 +284,13 @@ func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarX
 		data []byte
 	}
 	for _, f := range []contextFile{
-		{"Dockerfile",                    0644, []byte(dockerfile)},
-		{"entrypoint.sh",                 0644, entrypointContent},
-		{"csb/csb-persist",               0755, persistContent},
-		{"containers/policy.json",        0644, []byte(containersPolicy)},
-		{"containers/registries.conf",    0644, []byte(containersRegistries)},
-		{"containers/storage.conf",       0644, []byte(containersStorage)},
-		{"containers/containers.conf",    0644, []byte(containersContainers)},
+		{"Dockerfile", 0644, []byte(dockerfile)},
+		{"entrypoint.sh", 0644, entrypointContent},
+		{"csb/csb-persist", 0755, persistContent},
+		{"containers/policy.json", 0644, []byte(containersPolicy)},
+		{"containers/registries.conf", 0644, []byte(containersRegistries)},
+		{"containers/storage.conf", 0644, []byte(containersStorage)},
+		{"containers/containers.conf", 0644, []byte(containersContainers)},
 	} {
 		if err := addFile(f.name, f.data, f.mode); err != nil {
 			return nil, err
@@ -441,9 +441,9 @@ var runtimeGOOS = func() string {
 // ContainerLabels returns labels for the container.
 func ContainerLabels(cfg *Config) map[string]string {
 	return map[string]string{
-		"csb.managed":    "true",
+		"csb.managed":     "true",
 		"csb.home-volume": cfg.HomeVolume,
-		"csb.config-dir": cfg.ConfigDir,
+		"csb.config-dir":  cfg.ConfigDir,
 	}
 }
 

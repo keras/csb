@@ -4,34 +4,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 )
 
-// renderConfigTemplate builds the commented config.yaml template.
+// renderConfigTemplate builds the commented config.yaml template from Options struct tags.
+// Each field with a yaml: and example: tag produces one commented entry.
+// Example values containing literal \n are rendered as multi-line list blocks.
 func renderConfigTemplate() string {
-	type optEntry struct {
-		key     string
-		example string
-	}
-
-	opts := []optEntry{
-		{"tmux", "true"},
-		{"tty", "true          # default: auto-detect from stdin"},
-		{"mount", "\n#   - ~/.ssh:~/.ssh:ro"},
-		{"runtime", "auto"},
-		{"base_image", "debian:stable-slim"},
-		{"nested_podman", "false"},
-		{"addons", "[mise]"},
-		{"home_volume", "csb-home"},
-		{"image", "my-custom:latest"},
-		{"env_forward", "[MY_TOKEN, OTHER_VAR]"},
-		{"env", "[MY_VAR=hello, DEBUG=1]"},
-		{"publish", "\n#   - 8080:8080\n#   - 127.0.0.1:5432:5432"},
-		{"host_network", "false"},
-		{"host_exec_enabled", "false"},
-		{"host_exec_allow", `["open *", "git log **"]`},
-		{"host_exec_bind", "0.0.0.0:0"},
-	}
+	t := reflect.TypeOf(Options{})
 
 	lines := []string{
 		"# csb configuration — uncomment and edit as needed.",
@@ -39,24 +20,28 @@ func renderConfigTemplate() string {
 		"#",
 	}
 
-	for _, opt := range opts {
-		example := opt.example
+	for i := range t.NumField() {
+		f := t.Field(i)
+		yamlKey := f.Tag.Get("yaml")
+		example := f.Tag.Get("example")
+		if yamlKey == "" || example == "" {
+			continue
+		}
+		// Literal \n in the tag value acts as a line separator for multi-line blocks.
+		example = strings.ReplaceAll(example, `\n`, "\n")
+
 		if strings.HasPrefix(example, "\n") {
-			lines = append(lines, "# "+opt.key+":")
+			lines = append(lines, "# "+yamlKey+":")
 			for _, line := range strings.Split(strings.TrimLeft(example, "\n"), "\n") {
-				if strings.HasPrefix(line, "#") {
-					lines = append(lines, line)
-				} else {
-					lines = append(lines, "# "+line)
-				}
+				lines = append(lines, "#   "+line)
 			}
 		} else {
-			lines = append(lines, fmt.Sprintf("# %s: %s", opt.key, example))
+			lines = append(lines, fmt.Sprintf("# %s: %s", yamlKey, example))
 		}
 		lines = append(lines, "#")
 	}
 
-	// Remove trailing "#" if present
+	// Remove trailing "#"
 	if len(lines) > 0 && lines[len(lines)-1] == "#" {
 		lines = lines[:len(lines)-1]
 	}

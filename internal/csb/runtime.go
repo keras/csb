@@ -155,7 +155,6 @@ func (r *Runtime) ExecRun(argv []string) error {
 	return syscall.Exec(path, argv, os.Environ())
 }
 
-
 // containerGatewayIP returns the host IP on the container bridge network (Linux only),
 // but only if that IP is actually bound to a local interface (so the broker can bind to it).
 // Returns "" when the gateway is not a local address (e.g. rootless podman with slirp4netns).
