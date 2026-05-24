@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -501,12 +502,16 @@ func shJoin(args []string) string {
 }
 
 // shQuote single-quotes a string for shell.
+// Uses an allowlist rather than a denylist so that glob chars (*, ?, []),
+// tilde, and the empty string are all quoted rather than passed through raw.
 func shQuote(s string) string {
-	if !strings.ContainsAny(s, " \t\n\"'\\|&;<>()$`!{}") {
+	if s != "" && shSafeRE.MatchString(s) {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
+
+var shSafeRE = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
 
 // BuildRunCommand assembles the full container run command.
 func BuildRunCommand(cfg *Config, mounts []Mount, env [][2]string, imageName string) ([]string, error) {

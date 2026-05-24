@@ -323,3 +323,26 @@ func TestFormatHelp_ContainsExpectedFlags(t *testing.T) {
 		assert.Contains(t, help, want)
 	}
 }
+
+// ── shQuote ──────────────────────────────────────────────────────────────────
+
+func TestShQuote(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"bash", "bash"},
+		{"-l", "-l"},
+		{"foo/bar", "foo/bar"},
+		{"foo bar", "'foo bar'"},
+		{"*.go", "'*.go'"},
+		{"~/x", "'~/x'"},
+		{"", "''"},
+		{"it's", "'it'\\''s'"},
+		{"$HOME", "'$HOME'"},
+		{"a;b", "'a;b'"},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, shQuote(tt.in), "shQuote(%q)", tt.in)
+	}
+}
