@@ -124,7 +124,7 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["bash"]
+CMD ["bash", "-l"]
 `))
 
 // MakeDockerfile generates the Dockerfile for the given configuration.
@@ -371,7 +371,7 @@ func ResolveEnv(cfg *Config, brokerURL, brokerToken string) [][2]string {
 	env = append(env, [2]string{"HOST_UID", hostUID})
 	env = append(env, [2]string{"HOST_GID", hostGID})
 	env = append(env, [2]string{"HOME", ContainerHome})
-	env = append(env, [2]string{"SHELL", "/bin/bash"})
+	env = append(env, [2]string{"CSB_DEFAULT_SHELL", cfg.DefaultShell})
 
 	term := os.Getenv("TERM")
 	if term == "" {
@@ -465,17 +465,23 @@ func ImageLabels(cfg *Config) map[string]string {
 
 // resolveContainerCmd determines the command the container should run.
 func resolveContainerCmd(cfg *Config) []string {
-	args := cfg.PassthroughArgs
+	shell := cfg.DefaultShell
+	if shell == "" {
+		shell = "bash"
+	}
+
 	var inner []string
-	if len(args) == 0 {
-		inner = []string{"bash"}
+	if len(cfg.PassthroughArgs) > 0 {
+		inner = cfg.PassthroughArgs
+	} else if len(cfg.DefaultCmd) > 0 {
+		inner = cfg.DefaultCmd
 	} else {
-		inner = args
+		inner = []string{shell, "-l"}
 	}
 
 	if cfg.UseTmux {
-		postCommand := "exec bash"
-		if len(inner) > 0 && (inner[0] == "bash" || inner[0] == "zsh") {
+		postCommand := "exec " + shell + " -l"
+		if inner[0] == shell {
 			postCommand = ""
 		}
 		quoted := shJoin(inner)

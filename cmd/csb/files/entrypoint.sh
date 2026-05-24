@@ -13,9 +13,12 @@ _verbose_run() {
 
 HOST_UID="${HOST_UID:-0}"
 HOST_GID="${HOST_GID:-0}"
+_shell=$(command -v "${CSB_DEFAULT_SHELL:-bash}" 2>/dev/null)
+_shell=${_shell:-"/bin/${CSB_DEFAULT_SHELL:-bash}"}
+export SHELL="$_shell"
 cp /etc/passwd /tmp/passwd
-echo "sandbox:x:${HOST_UID}:${HOST_GID}::$CSB_HOME:/bin/bash" >> /tmp/passwd
-echo "sandbox:x:${HOST_UID}:${HOST_GID}::$CSB_HOME:/bin/bash" >> /etc/passwd
+echo "sandbox:x:${HOST_UID}:${HOST_GID}::$CSB_HOME:$_shell" >> /tmp/passwd
+echo "sandbox:x:${HOST_UID}:${HOST_GID}::$CSB_HOME:$_shell" >> /etc/passwd
 # PAM account validation requires a shadow entry; ! = locked password (fine for NOPASSWD sudo)
 echo "sandbox:!:19000:0:99999:7:::" >> /etc/shadow
 export NSS_WRAPPER_PASSWD=/tmp/passwd
