@@ -86,6 +86,196 @@ func (r *Runtime) ListCSBImageIDs() []string {
 	return ids
 }
 
+// ImageInfo holds metadata about a csb-managed image.
+type ImageInfo struct {
+	ID         string
+	Repository string
+	Tag        string
+	Size       string
+	Age        string
+	ConfigDir  string
+}
+
+// VolumeInfo holds metadata about a csb-managed volume.
+type VolumeInfo struct {
+	Name      string
+	Age       string
+	ConfigDir string
+}
+
+// ListCSBImagesInfo returns metadata for all csb-managed images.
+func (r *Runtime) ListCSBImagesInfo() []ImageInfo {
+	// docker images --format does not support .Label, so fetch ID/size/age
+	// in one pass then retrieve labels via image inspect.
+	cmd := exec.Command(r.CLI, "images",
+		"--filter", "label=csb.managed=true",
+		"--format", "{{.ID}}\t{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}",
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var infos []ImageInfo
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 5)
+		id := parts[0]
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		info := ImageInfo{ID: id}
+		if len(parts) > 1 {
+			info.Repository = parts[1]
+		}
+		if len(parts) > 2 {
+			info.Tag = parts[2]
+		}
+		if len(parts) > 3 {
+			info.Size = parts[3]
+		}
+		if len(parts) > 4 {
+			info.Age = parts[4]
+		}
+		infos = append(infos, info)
+	}
+	if len(infos) == 0 {
+		return nil
+	}
+	ids := make([]string, len(infos))
+	for i, info := range infos {
+		ids[i] = info.ID
+	}
+	configDirs := r.imageConfigDirs(ids)
+	for i := range infos {
+		infos[i].ConfigDir = configDirs[infos[i].ID]
+	}
+	return infos
+}
+
+// imageConfigDirs returns a short-ID → csb.config-dir map for the given image IDs.
+func (r *Runtime) imageConfigDirs(ids []string) map[string]string {
+	args := append([]string{"image", "inspect"}, ids...)
+	cmd := exec.Command(r.CLI, args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	type imageJSON struct {
+		Id     string `json:"Id"`
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
+	}
+	var images []imageJSON
+	if err := json.Unmarshal(out, &images); err != nil {
+		return nil
+	}
+	result := make(map[string]string, len(images))
+	for _, img := range images {
+		// Id is "sha256:abc123..." — trim prefix and truncate to 12-char short form.
+		id := strings.TrimPrefix(img.Id, "sha256:")
+		if len(id) > 12 {
+			id = id[:12]
+		}
+		result[id] = img.Config.Labels["csb.config-dir"]
+	}
+	return result
+}
+
+// ListCSBVolumesInfo returns metadata for all csb-managed volumes.
+func (r *Runtime) ListCSBVolumesInfo() []VolumeInfo {
+	names := r.ListCSBVolumes()
+	if len(names) == 0 {
+		return nil
+	}
+	args := append([]string{"volume", "inspect"}, names...)
+	cmd := exec.Command(r.CLI, args...)
+	out, err := cmd.Output()
+	if err != nil {
+		var infos []VolumeInfo
+		for _, n := range names {
+			infos = append(infos, VolumeInfo{Name: n})
+		}
+		return infos
+	}
+	type volJSON struct {
+		Name      string            `json:"Name"`
+		CreatedAt string            `json:"CreatedAt"`
+		Labels    map[string]string `json:"Labels"`
+	}
+	var vols []volJSON
+	if err := json.Unmarshal(out, &vols); err != nil {
+		var infos []VolumeInfo
+		for _, n := range names {
+			infos = append(infos, VolumeInfo{Name: n})
+		}
+		return infos
+	}
+	var infos []VolumeInfo
+	for _, v := range vols {
+		info := VolumeInfo{
+			Name:      v.Name,
+			ConfigDir: v.Labels["csb.config-dir"],
+		}
+		for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05.999999999 -0700 MST"} {
+			if t, err := time.Parse(layout, v.CreatedAt); err == nil {
+				info.Age = humanAge(t)
+				break
+			}
+		}
+		infos = append(infos, info)
+	}
+	return infos
+}
+
+func humanAge(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		n := int(d.Minutes())
+		if n == 1 {
+			return "1 minute ago"
+		}
+		return fmt.Sprintf("%d minutes ago", n)
+	case d < 24*time.Hour:
+		n := int(d.Hours())
+		if n == 1 {
+			return "1 hour ago"
+		}
+		return fmt.Sprintf("%d hours ago", n)
+	case d < 7*24*time.Hour:
+		n := int(d.Hours() / 24)
+		if n == 1 {
+			return "1 day ago"
+		}
+		return fmt.Sprintf("%d days ago", n)
+	case d < 30*24*time.Hour:
+		n := int(d.Hours() / 24 / 7)
+		if n == 1 {
+			return "1 week ago"
+		}
+		return fmt.Sprintf("%d weeks ago", n)
+	case d < 365*24*time.Hour:
+		n := int(d.Hours() / 24 / 30)
+		if n == 1 {
+			return "1 month ago"
+		}
+		return fmt.Sprintf("%d months ago", n)
+	default:
+		n := int(d.Hours() / 24 / 365)
+		if n == 1 {
+			return "1 year ago"
+		}
+		return fmt.Sprintf("%d years ago", n)
+	}
+}
+
 // RemoveImages removes images by ID.
 func (r *Runtime) RemoveImages(ids []string) {
 	if len(ids) == 0 {

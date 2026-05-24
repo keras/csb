@@ -1,71 +1,155 @@
 package csb
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/term"
 )
 
-// RunClean removes all csb images and volumes after prompting for confirmation.
+// RunClean interactively selects csb images and volumes to remove.
 func RunClean(cfg *Config, rt *Runtime) error {
-	imageIDs := rt.ListCSBImageIDs()
-	volumes := rt.ListCSBVolumes()
-
-	// Always include current home volume
-	hasHome := false
-	for _, v := range volumes {
-		if v == cfg.HomeVolume {
-			hasHome = true
-			break
-		}
-	}
-	if !hasHome {
-		volumes = append(volumes, cfg.HomeVolume)
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		fmt.Fprintln(os.Stderr, "csb clean: requires an interactive terminal")
+		os.Exit(1)
 	}
 
-	if len(imageIDs) == 0 && len(volumes) == 0 {
+	images := rt.ListCSBImagesInfo()
+	volumes := rt.ListCSBVolumesInfo()
+
+	if len(images) == 0 && len(volumes) == 0 {
 		fmt.Println("Nothing to remove.")
 		return nil
 	}
 
-	if len(imageIDs) > 0 {
-		fmt.Printf("Images (%d):\n", len(imageIDs))
-		for _, id := range imageIDs {
-			fmt.Printf("  %s\n", id)
+	var entries []selectorEntry
+
+	if len(images) > 0 {
+		entries = append(entries, selectorEntry{
+			label:    fmt.Sprintf("Images (%d):", len(images)),
+			isHeader: true,
+		})
+		maxRepo, maxSize, maxAge := 0, 0, 0
+		for _, img := range images {
+			repoTag := imageRepoTag(img)
+			if len(repoTag) > maxRepo {
+				maxRepo = len(repoTag)
+			}
+			if len(img.Size) > maxSize {
+				maxSize = len(img.Size)
+			}
+			if len(img.Age) > maxAge {
+				maxAge = len(img.Age)
+			}
+		}
+		for _, img := range images {
+			label := img.ID
+			label += "  " + padRight(imageRepoTag(img), maxRepo)
+			if img.Size != "" {
+				label += "  " + padRight(img.Size, maxSize)
+			}
+			if img.Age != "" {
+				label += "  " + padRight(img.Age, maxAge)
+			}
+			if cd := shortenHome(img.ConfigDir, cfg.Home); cd != "" {
+				label += "  " + cd
+			}
+			entries = append(entries, selectorEntry{label: label, imageID: img.ID})
 		}
 	}
+
 	if len(volumes) > 0 {
-		fmt.Printf("Volumes (%d):\n", len(volumes))
-		for _, v := range volumes {
-			fmt.Printf("  %s\n", v)
+		if len(entries) > 0 {
+			entries = append(entries, selectorEntry{isHeader: true})
+		}
+		entries = append(entries, selectorEntry{
+			label:    fmt.Sprintf("Volumes (%d):", len(volumes)),
+			isHeader: true,
+		})
+		maxAge := 0
+		for _, vol := range volumes {
+			if len(vol.Age) > maxAge {
+				maxAge = len(vol.Age)
+			}
+		}
+		for _, vol := range volumes {
+			label := vol.Name
+			if vol.Age != "" {
+				label += "  " + padRight(vol.Age, maxAge)
+			}
+			if cd := shortenHome(vol.ConfigDir, cfg.Home); cd != "" {
+				label += "  " + cd
+			}
+			if vol.Name == cfg.HomeVolume {
+				label += "  ← current"
+			}
+			entries = append(entries, selectorEntry{label: label, volName: vol.Name})
 		}
 	}
 
-	fmt.Print("\nRemove all of the above? [y/N] ")
-	reader := bufio.NewReader(os.Stdin)
-	answer, err := reader.ReadString('\n')
-	if err != nil {
-		fmt.Println()
-		os.Exit(1)
+	selected, ok := runSelector(entries)
+	if !ok {
+		fmt.Println("\nAborted.")
+		return nil
 	}
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer != "y" {
-		fmt.Println("Aborted.")
-		os.Exit(1)
+	if len(selected) == 0 {
+		fmt.Println("\nNothing selected.")
+		return nil
 	}
 
+	fmt.Println()
+	var imageIDs []string
+	for _, e := range selected {
+		if e.imageID != "" {
+			imageIDs = append(imageIDs, e.imageID)
+		}
+	}
 	if len(imageIDs) > 0 {
 		fmt.Printf("Removing %d image(s)...\n", len(imageIDs))
 		rt.RemoveImages(imageIDs)
 	}
-	for _, vol := range volumes {
-		fmt.Printf("Removing volume %s...\n", vol)
-		rt.RemoveVolume(vol)
+	for _, e := range selected {
+		if e.volName != "" {
+			fmt.Printf("Removing volume %s...\n", e.volName)
+			rt.RemoveVolume(e.volName)
+		}
 	}
 	return nil
+}
+
+func imageRepoTag(img ImageInfo) string {
+	repo := img.Repository
+	if repo == "" || repo == "<none>" {
+		repo = "<none>"
+	}
+	tag := img.Tag
+	if tag == "" || tag == "<none>" {
+		return repo
+	}
+	return repo + ":" + tag
+}
+
+func shortenHome(p, home string) string {
+	if p == "" || home == "" {
+		return p
+	}
+	if p == home {
+		return "~"
+	}
+	if strings.HasPrefix(p, home+"/") {
+		return "~" + p[len(home):]
+	}
+	return p
+}
+
+func padRight(s string, width int) string {
+	if len(s) >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-len(s))
 }
 
 // RunConfigEdit opens the target config file in the user's editor.
@@ -127,11 +211,6 @@ func RunRun(cfg *Config, rt *Runtime, entrypointContent, persistContent, hostRun
 			fmt.Fprintf(os.Stderr, "csb: error: addon not found: %s\n", name)
 			os.Exit(2)
 		}
-	}
-
-	if cfg.ResetHome {
-		fmt.Fprintf(os.Stderr, "Removing home volume %s...\n", cfg.HomeVolume)
-		rt.RemoveVolume(cfg.HomeVolume)
 	}
 
 	imgName := ImageName(cfg, string(entrypointContent), string(persistContent), hostRunTarXZ)

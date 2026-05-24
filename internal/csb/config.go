@@ -85,9 +85,8 @@ type Config struct {
 
 	Workspace  *string // nil = no workspace
 	Subcommand string  // "run", "clean", "config_edit"
-	Rebuild    bool
-	ResetHome  bool
-	Verbose    bool
+	Rebuild bool
+	Verbose bool
 
 	ConfigEditTarget string // "user" or "workdir"
 	PassthroughArgs  []string

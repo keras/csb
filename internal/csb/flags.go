@@ -237,7 +237,7 @@ func yamlStringList(m map[string]interface{}, key string) ([]string, bool) {
 
 func parseRunArgs(argv []string, configDir string, preWorkspace *string, yamlCfg map[string]interface{}, cwd, home string) (*Config, error) {
 	var workspaceFlag string
-	var noWorkspace, rebuild, resetHome, verbose bool
+	var noWorkspace, rebuild, verbose bool
 
 	parser := newOptParser()
 	var remaining []string
@@ -264,8 +264,6 @@ func parseRunArgs(argv []string, configDir string, preWorkspace *string, yamlCfg
 			noWorkspace = true
 		case arg == "--rebuild":
 			rebuild = true
-		case arg == "--reset-home":
-			resetHome = true
 		case arg == "-v", arg == "--verbose":
 			verbose = true
 		case arg == "--config-dir":
@@ -328,7 +326,6 @@ func parseRunArgs(argv []string, configDir string, preWorkspace *string, yamlCfg
 		Workspace:       workspace,
 		Subcommand:      "run",
 		Rebuild:         rebuild,
-		ResetHome:       resetHome,
 		Verbose:         verbose,
 		PassthroughArgs: passthrough,
 		Options:         resolved,
@@ -429,14 +426,13 @@ func formatHelp() string {
 
 Subcommands:
   run          Run a command in an isolated container (default)
-  clean        Remove all csb images and labeled volumes
+  clean        Interactively select csb images and volumes to remove
   config-edit  Open the user or workdir config file in $VISUAL/$EDITOR/vi
 
 Flags:
   --workspace PATH          host directory to mount as the workspace (default: CWD)
   --no-workspace            ephemeral workspace, no host directory mounted
   --rebuild                 force a full image rebuild
-  --reset-home              remove and recreate the home volume
   -v, --verbose             print the run command before executing
   --config-dir PATH         host directory for csb config (default: ~/.config/csb)
 `
