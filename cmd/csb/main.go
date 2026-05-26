@@ -25,6 +25,12 @@ var csbPersistSH []byte
 //go:embed files/addons/mise.sh
 var miseAddonSH []byte
 
+//go:embed files/addons/podman.sh
+var podmanAddonSH []byte
+
+//go:embed files/addons/sudo.sh
+var sudoAddonSH []byte
+
 //go:embed files/csb-host-run.tar.xz
 var hostRunTarXZ []byte
 
@@ -40,7 +46,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	csb.InitConfigDir(cfg.ConfigDir, miseAddonSH)
+	csb.InitConfigDir(cfg.ConfigDir, miseAddonSH, podmanAddonSH, sudoAddonSH)
 
 	rt := csb.NewRuntime(cfg.ContainerCLI())
 
@@ -50,8 +56,15 @@ func main() {
 			fmt.Fprintf(os.Stderr, "csb: error: %v\n", err)
 			os.Exit(1)
 		}
-	case "config_edit":
-		if err := csb.RunConfigEdit(cfg); err != nil {
+	case "config":
+		var err error
+		switch cfg.ConfigAction {
+		case "show":
+			err = csb.RunConfigShow(cfg)
+		case "edit":
+			err = csb.RunConfigEdit(cfg)
+		}
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "csb: error: %v\n", err)
 			os.Exit(1)
 		}

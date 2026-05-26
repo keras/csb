@@ -113,18 +113,6 @@ func TestPrecedence_StringDefault(t *testing.T) {
 	assert.Equal(t, "auto", resolveWith(t, nil, nil).Runtime)
 }
 
-func TestPrecedence_BoolCLIWins(t *testing.T) {
-	t.Setenv("CSB_NESTED_PODMAN", "true")
-	opts := resolveWith(t, map[int]any{fieldIdx("NestedPodman"): false}, map[string]any{"nested_podman": true})
-	assert.False(t, opts.NestedPodman)
-}
-
-func TestPrecedence_BoolEnvOverYAML(t *testing.T) {
-	t.Setenv("CSB_NESTED_PODMAN", "1")
-	opts := resolveWith(t, nil, map[string]any{"nested_podman": false})
-	assert.True(t, opts.NestedPodman)
-}
-
 func TestPrecedence_SliceCLIWins(t *testing.T) {
 	t.Setenv("CSB_ENV_FORWARD", "FROM_ENV")
 	opts := resolveWith(t,
@@ -319,7 +307,7 @@ func TestFormatHelp_NoTruncation(t *testing.T) {
 
 func TestFormatHelp_ContainsExpectedFlags(t *testing.T) {
 	help := formatHelp()
-	for _, want := range []string{"--tmux", "--no-tmux", "--nested-podman", "--no-nested-podman", "--host-exec-allow", "--env-forward"} {
+	for _, want := range []string{"--tmux", "--no-tmux", "--host-exec-allow", "--env-forward"} {
 		assert.Contains(t, help, want)
 	}
 }

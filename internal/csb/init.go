@@ -50,7 +50,7 @@ func renderConfigTemplate() string {
 }
 
 // InitConfigDir creates the config directory with default files if needed.
-func InitConfigDir(configDir string, miseAddonContent []byte) {
+func InitConfigDir(configDir string, miseAddonContent, podmanAddonContent, sudoAddonContent []byte) {
 	if _, err := os.Stat(configDir); os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "Initialising default config at %s …\n", configDir)
 	}
@@ -63,6 +63,8 @@ func InitConfigDir(configDir string, miseAddonContent []byte) {
 		{"config.yaml", []byte(renderConfigTemplate()), false},
 		{"home", nil, true},
 		{"addons/mise.sh", miseAddonContent, false},
+		{"addons/podman.sh", podmanAddonContent, false},
+		{"addons/sudo.sh", sudoAddonContent, false},
 	}
 
 	for _, f := range files {

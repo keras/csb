@@ -43,11 +43,10 @@ type Options struct {
 	UseTTY       bool     `flag:"tty"             yaml:"tty"              default:"@autoTTY"    example:"true"         help:"allocate a TTY (default: auto-detect from stdin)"`
 	DefaultShell string   `flag:"shell"           yaml:"default_shell"    default:"bash"        example:"zsh"          help:"shell for new tmux windows, $SHELL, and default startup command"`
 	DefaultCmd   []string `yaml:"default_cmd"                             example:"[vim]"       help:"startup command (default: <default_shell> -l; overridden by positional args)"`
-	Addons       []string `flag:"addon"           yaml:"addons"           default:"mise"        example:"[mise]"       help:"addon to install"                         metavar:"NAME"`
+	Addons       []string `flag:"addon"           yaml:"addons"           default:"mise sudo"   example:"[mise, sudo]" help:"addon to install"                         metavar:"NAME"`
 	Mount        []Mount  `flag:"mount"           yaml:"mount"            parse:"mount"         example:"\n- ~/.ssh:~/.ssh:ro"  help:"extra bind mounts"                        metavar:"SRC:DST[:MODE]"`
 	EnvForward   []string `flag:"env-forward"     env:"CSB_ENV_FORWARD"   envsep:"fields"       yaml:"env_forward"     example:"[MY_TOKEN, OTHER_VAR]"  help:"host env var names to forward into the container"  metavar:"NAME"`
 	EnvInject    []string `flag:"env"             env:"CSB_ENV"           envsep:"fields"       yaml:"env"             example:"[MY_VAR=hello, DEBUG=1]"  help:"KEY=VALUE pairs to inject into the container"  metavar:"KEY=VALUE"`
-	NestedPodman bool     `flag:"nested-podman"   env:"CSB_NESTED_PODMAN" yaml:"nested_podman"  example:"false"                help:"install and configure podman inside the container"`
 	Publish      []string `flag:"publish"         env:"CSB_PUBLISH"       envsep:"fields"       yaml:"publish"         validate:"publish"     example:"\n- 8080:8080\n- 127.0.0.1:5432:5432"  help:"publish a container port to the host"  metavar:"SPEC"`
 
 	HomeVolume      string   `env:"CSB_HOME_VOLUME"  yaml:"home_volume"      default:"csb-home"    example:"csb-home"     help:"named volume for the container home"`
@@ -367,7 +366,7 @@ func applyDefault(fv reflect.Value, field reflect.StructField, defaultTag, parse
 	case reflect.String:
 		fv.SetString(defaultTag)
 	case reflect.Slice:
-		return setSliceField(fv, field, []string{defaultTag}, parseTag)
+		return setSliceField(fv, field, strings.Fields(defaultTag), parseTag)
 	}
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"golang.org/x/term"
+	"gopkg.in/yaml.v3"
 )
 
 // RunClean interactively selects csb images and volumes to remove.
@@ -153,13 +154,30 @@ func padRight(s string, width int) string {
 }
 
 // RunConfigEdit opens the target config file in the user's editor.
+// RunConfigShow prints the fully resolved configuration as YAML.
+func RunConfigShow(cfg *Config) error {
+	out, err := yaml.Marshal(cfg.Options)
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+	fmt.Printf("# csb resolved config\n# config dir: %s\n", cfg.ConfigDir)
+	if cfg.Workspace != nil {
+		fmt.Printf("# workspace:   %s\n", *cfg.Workspace)
+	} else {
+		fmt.Printf("# workspace:   (none)\n")
+	}
+	fmt.Println()
+	fmt.Print(string(out))
+	return nil
+}
+
 func RunConfigEdit(cfg *Config) error {
 	var path string
 	header := ""
 
 	if cfg.ConfigEditTarget == "workdir" {
 		if cfg.Workspace == nil {
-			fmt.Fprintln(os.Stderr, "csb config-edit workdir requires a workspace (not --no-workspace)")
+			fmt.Fprintln(os.Stderr, "csb config edit workdir requires a workspace (not --no-workspace)")
 			os.Exit(1)
 		}
 		path = workdirConfigPath(cfg.ConfigDir, *cfg.Workspace)

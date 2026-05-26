@@ -19,93 +19,68 @@ import (
 // Base packages for the container image.
 var basePackages = []string{
 	"bash-completion",
-	"build-essential",
 	"curl",
 	"git",
 	"gosu",
 	"gpg",
-	"libssl-dev",
-	"libx11-6",
-	"libx11-xcb1",
-	"libxcursor1",
-	"libxext6",
-	"libxi6",
-	"libxkbcommon-x11-0",
-	"libxrender1",
-	"libxtst6",
 	"libnss-wrapper",
 	"nano",
 	"pkg-config",
-	"sudo",
 	"tmux",
 	"zsh",
 }
 
-var podmanPackages = []string{
-	"fuse-overlayfs",
-	"podman",
-	"uidmap",
-}
-
-// Static container config files for nested Podman.
-const containersPolicy = `{"default":[{"type":"insecureAcceptAnything"}]}`
-
-const containersRegistries = `
-[registries.search]
-registries = ["docker.io"]
-`
-
-const containersStorage = `
-[storage]
-driver = "overlay"
-[storage.options]
-mount_program = "/usr/bin/fuse-overlayfs"
-`
-
-const containersContainers = `
-[containers]
-# Docker bind-mounts /proc/sys read-only so crun cannot set sysctls.
-default_sysctls = []
-# Sharing the outer PID namespace avoids crun needing to mount a new proc
-# inside a nested user+mount namespace, which Docker prevents.
-pidns = "host"
-# slirp4netns sets accept_dad before the inner mount namespace is active,
-# hitting the outer read-only /proc/sys; disabling IPv6 skips that sysctl.
-network_cmd_options = ["enable_ipv6=false"]
-`
-
 // aptPackages returns the sorted list of apt packages to install.
-func aptPackages(nestedPodman bool) []string {
+func aptPackages() []string {
 	pkgs := make([]string, len(basePackages))
 	copy(pkgs, basePackages)
-	if nestedPodman {
-		pkgs = append(pkgs, podmanPackages...)
-	}
 	sort.Strings(pkgs)
 	return pkgs
+}
+
+// parseAddonRunArgs scans enabled addon scripts for "# csb:run-arg" directives
+// and returns deduplicated tokens to append to the container run command.
+func parseAddonRunArgs(scripts []string) ([]string, error) {
+	seen := make(map[string]bool)
+	var result []string
+	for _, path := range scripts {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("reading addon %s: %w", path, err)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			val, ok := strings.CutPrefix(line, "# csb:run-arg ")
+			if !ok {
+				continue
+			}
+			val = strings.TrimSpace(val)
+			if val == "" || seen[val] {
+				continue
+			}
+			seen[val] = true
+			result = append(result, strings.Fields(val)...)
+		}
+	}
+	return result, nil
 }
 
 var dockerfileTemplate = template.Must(template.New("dockerfile").Parse(`FROM {{.BaseImage}}
 
 RUN apt-get update && apt-get install -y \
     {{.PkgLine}} \
-    && rm -rf /var/lib/apt/lists/* \
-    && echo "sandbox ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/sandbox \
-    && chmod 0440 /etc/sudoers.d/sandbox
-{{if .NestedPodman}}
-COPY containers /etc/containers
-{{end}}
+    && rm -rf /var/lib/apt/lists/*
+
 # Shell setup
 RUN printf '\n[ -f /usr/share/bash-completion/bash_completion ] && . /usr/share/bash-completion/bash_completion\n' \
-    >> /etc/bash.bashrc \
-    {{.PodmanAlias}}
+    >> /etc/bash.bashrc
 
 RUN mkdir -p /etc/csb/entrypoint.d
 
 COPY csb/build.d /tmp/build.d
-RUN for script in /tmp/build.d/*.sh; do \
+RUN apt-get update && \
+    for script in /tmp/build.d/*.sh; do \
         [ -x "$script" ] && "$script"; \
-    done && rm -rf /tmp/build.d
+    done && rm -rf /tmp/build.d /var/lib/apt/lists/*
 
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 EDITOR=nano CSB_HOME=/home/sandbox
 
@@ -117,7 +92,6 @@ RUN chmod +x /usr/local/bin/csb-persist
 
 # csb-host-run sha256:{{.HostRunHash}}
 COPY csb/csb-host-run /usr/local/bin/csb-host-run
-RUN chmod +x /usr/local/bin/csb-host-run
 {{- end}}
 
 # Entrypoint
@@ -129,25 +103,17 @@ CMD ["bash", "-l"]
 `))
 
 // MakeDockerfile generates the Dockerfile for the given configuration.
-func MakeDockerfile(baseImage string, nestedPodman bool, hostRunHash string) string {
-	podmanAlias := "&& true"
-	if nestedPodman {
-		podmanAlias = `&& printf '\nalias docker=podman\n' >> /etc/bash.bashrc`
-	}
+func MakeDockerfile(baseImage string, hostRunHash string) string {
 	data := struct {
-		BaseImage    string
-		PkgLine      string
-		NestedPodman bool
-		PodmanAlias  string
-		Workdir      string
-		HostRunHash  string
+		BaseImage   string
+		PkgLine     string
+		Workdir     string
+		HostRunHash string
 	}{
-		BaseImage:    baseImage,
-		PkgLine:      strings.Join(aptPackages(nestedPodman), " "),
-		NestedPodman: nestedPodman,
-		PodmanAlias:  podmanAlias,
-		Workdir:      ContainerWorkdir,
-		HostRunHash:  hostRunHash,
+		BaseImage:   baseImage,
+		PkgLine:     strings.Join(aptPackages(), " "),
+		Workdir:     ContainerWorkdir,
+		HostRunHash: hostRunHash,
 	}
 	var buf bytes.Buffer
 	if err := dockerfileTemplate.Execute(&buf, data); err != nil {
@@ -236,7 +202,7 @@ func ImageName(cfg *Config, entrypointContent, persistContent string, hostRunTar
 		sum := sha256.Sum256(data)
 		hrh = fmt.Sprintf("%x", sum)
 	}
-	dockerfile := MakeDockerfile(cfg.BaseImage, cfg.NestedPodman, hrh)
+	dockerfile := MakeDockerfile(cfg.BaseImage, hrh)
 
 	var addonContent strings.Builder
 	for _, p := range addonScripts(cfg) {
@@ -261,7 +227,7 @@ func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarX
 		sum := sha256.Sum256(hostRunData)
 		hrh = fmt.Sprintf("%x", sum)
 	}
-	dockerfile := MakeDockerfile(cfg.BaseImage, cfg.NestedPodman, hrh)
+	dockerfile := MakeDockerfile(cfg.BaseImage, hrh)
 
 	buf := &bytes.Buffer{}
 	tw := tar.NewWriter(buf)
@@ -288,10 +254,6 @@ func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarX
 		{"Dockerfile", 0644, []byte(dockerfile)},
 		{"entrypoint.sh", 0644, entrypointContent},
 		{"csb/csb-persist", 0755, persistContent},
-		{"containers/policy.json", 0644, []byte(containersPolicy)},
-		{"containers/registries.conf", 0644, []byte(containersRegistries)},
-		{"containers/storage.conf", 0644, []byte(containersStorage)},
-		{"containers/containers.conf", 0644, []byte(containersContainers)},
 	} {
 		if err := addFile(f.name, f.data, f.mode); err != nil {
 			return nil, err
@@ -383,29 +345,6 @@ func ResolveEnv(cfg *Config, brokerURL, brokerToken string) [][2]string {
 	colorterm := os.Getenv("COLORTERM")
 	env = append(env, [2]string{"COLORTERM", colorterm})
 
-	// DISPLAY
-	hostDisplay := os.Getenv("DISPLAY")
-	var display string
-	// darwin or empty/socket display → use docker/container internal hostname
-	isDarwin := false
-	// runtime.GOOS check
-	if goos := runtimeGOOS(); goos == "darwin" {
-		isDarwin = true
-	}
-	if isDarwin || hostDisplay == "" || strings.HasPrefix(hostDisplay, "/") {
-		gateway := "host.docker.internal"
-		if cfg.ContainerCLI() == "podman" {
-			gateway = "host.containers.internal"
-		}
-		display = gateway + ":0"
-	} else {
-		display = hostDisplay
-	}
-	env = append(env, [2]string{"DISPLAY", display})
-
-	if cfg.NestedPodman {
-		env = append(env, [2]string{"CSB_NESTED_PODMAN", "1"})
-	}
 	if cfg.Verbose {
 		env = append(env, [2]string{"CSB_VERBOSE", "1"})
 	}
@@ -432,11 +371,6 @@ func ResolveEnv(cfg *Config, brokerURL, brokerToken string) [][2]string {
 	}
 
 	return env
-}
-
-// runtimeGOOS returns the current OS (wrapper for testing).
-var runtimeGOOS = func() string {
-	return runtime.GOOS
 }
 
 // ContainerLabels returns labels for the container.
@@ -533,17 +467,12 @@ func BuildRunCommand(cfg *Config, mounts []Mount, env [][2]string, imageName str
 		cmd = append(cmd, "--label", k+"="+labels[k])
 	}
 
-	// Nested Podman flags
-	if cfg.NestedPodman {
-		cmd = append(cmd,
-			"--device", "/dev/fuse",
-			"--device", "/dev/net/tun",
-			"--security-opt", "seccomp=unconfined",
-			"--security-opt", "apparmor=unconfined",
-			"--cap-add", "SYS_ADMIN",
-			"--cap-add", "NET_ADMIN",
-		)
+	// Addon run args (from # csb:run-arg directives in enabled addon scripts)
+	addonArgs, err := parseAddonRunArgs(addonScripts(cfg))
+	if err != nil {
+		return nil, err
 	}
+	cmd = append(cmd, addonArgs...)
 
 	if cfg.HostNetwork {
 		cmd = append(cmd, "--network", "host")

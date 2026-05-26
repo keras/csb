@@ -13,9 +13,9 @@ const ContainerWorkdir = "/workspace"
 
 // Mount represents a single container bind mount.
 type Mount struct {
-	Src      string
-	Dst      string
-	Readonly bool
+	Src      string `yaml:"src"`
+	Dst      string `yaml:"dst"`
+	Readonly bool   `yaml:"readonly"`
 }
 
 // ToArgs returns the -v flag arguments for this mount.
@@ -88,7 +88,8 @@ type Config struct {
 	Rebuild bool
 	Verbose bool
 
-	ConfigEditTarget string // "user" or "workdir"
+	ConfigAction     string // "edit" or "show"
+	ConfigEditTarget string // "user" or "workdir" (for config edit)
 	PassthroughArgs  []string
 
 	Options

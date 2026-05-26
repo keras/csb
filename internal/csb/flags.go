@@ -20,8 +20,8 @@ func detectSubcommand(argv []string) (string, []string) {
 			switch token {
 			case "clean":
 				return "clean", append(argv[:i:i], argv[i+1:]...)
-			case "config-edit":
-				return "config_edit", append(argv[:i:i], argv[i+1:]...)
+			case "config", "config-edit":
+				return "config", append(argv[:i:i], argv[i+1:]...)
 			case "run":
 				return "run", append(argv[:i:i], argv[i+1:]...)
 			default:
@@ -63,8 +63,8 @@ func ParseArgs(argv []string) (*Config, error) {
 	switch subcommand {
 	case "clean":
 		return parseCleanArgs(subArgv, configDir, preWorkspace, yamlCfg, cwd, home)
-	case "config_edit":
-		return parseConfigEditArgs(subArgv, configDir, preWorkspace, cwd, home)
+	case "config":
+		return parseConfigArgs(subArgv, configDir, preWorkspace, yamlCfg, cwd, home)
 	default:
 		return parseRunArgs(subArgv, configDir, preWorkspace, yamlCfg, cwd, home)
 	}
@@ -356,17 +356,19 @@ func parseCleanArgs(argv []string, configDir string, preWorkspace *string, yamlC
 	}, nil
 }
 
-func parseConfigEditArgs(argv []string, configDir string, preWorkspace *string, cwd, home string) (*Config, error) {
+func parseConfigArgs(argv []string, configDir string, preWorkspace *string, yamlCfg map[string]interface{}, cwd, home string) (*Config, error) {
 	verbose := false
 	var workspaceFlag string
 	noWorkspace := false
-	var target string
 
 	var positional []string
 
 	for i := 0; i < len(argv); i++ {
 		arg := argv[i]
 		switch {
+		case arg == "-h", arg == "--help":
+			fmt.Print(formatConfigHelp())
+			os.Exit(0)
 		case arg == "-v", arg == "--verbose":
 			verbose = true
 		case arg == "--workspace" && i+1 < len(argv):
@@ -387,14 +389,27 @@ func parseConfigEditArgs(argv []string, configDir string, preWorkspace *string, 
 		}
 	}
 
-	if len(positional) > 0 {
-		target = positional[0]
+	if len(positional) == 0 {
+		fmt.Print(formatConfigHelp())
+		os.Exit(0)
 	}
-	if target == "" {
-		target = "user"
-	}
-	if target != "user" && target != "workdir" {
-		return nil, fmt.Errorf("config-edit target must be 'user' or 'workdir', got %q", target)
+
+	action := positional[0]
+	positional = positional[1:]
+
+	editTarget := "user"
+	switch action {
+	case "show":
+		// no extra args
+	case "edit":
+		if len(positional) > 0 {
+			editTarget = positional[0]
+		}
+		if editTarget != "user" && editTarget != "workdir" {
+			return nil, fmt.Errorf("config edit target must be 'user' or 'workdir', got %q", editTarget)
+		}
+	default:
+		return nil, fmt.Errorf("unknown config action %q; expected 'show' or 'edit'", action)
 	}
 
 	var workspace *string
@@ -410,24 +425,47 @@ func parseConfigEditArgs(argv []string, configDir string, preWorkspace *string, 
 		workspace = preWorkspace
 	}
 
+	resolved, err := resolveOptions(nil, yamlCfg)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		CWD:              cwd,
 		Home:             home,
 		ConfigDir:        configDir,
 		Workspace:        workspace,
-		Subcommand:       "config_edit",
-		ConfigEditTarget: target,
+		Subcommand:       "config",
+		ConfigAction:     action,
+		ConfigEditTarget: editTarget,
 		Verbose:          verbose,
+		Options:          resolved,
 	}, nil
+}
+
+func formatConfigHelp() string {
+	return `Usage: csb config <action> [options]
+
+Actions:
+  show                    Print the fully resolved configuration as YAML
+  edit [user|workdir]     Open a config file in $VISUAL/$EDITOR/vi (default: user)
+
+Options:
+  --workspace PATH        workspace directory (default: CWD)
+  --no-workspace          no workspace
+  --config-dir PATH       csb config directory (default: ~/.config/csb)
+`
 }
 
 func formatHelp() string {
 	fixed := `Usage: csb [flags] [subcommand] [-- args...]
 
 Subcommands:
-  run          Run a command in an isolated container (default)
-  clean        Interactively select csb images and volumes to remove
-  config-edit  Open the user or workdir config file in $VISUAL/$EDITOR/vi
+  run               Run a command in an isolated container (default)
+  clean             Interactively select csb images and volumes to remove
+  config show       Print the fully resolved configuration as YAML
+  config edit       Open the user or workdir config file in $VISUAL/$EDITOR/vi
+  config edit workdir  Edit the per-workspace config file
 
 Flags:
   --workspace PATH          host directory to mount as the workspace (default: CWD)
