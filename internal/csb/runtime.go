@@ -34,7 +34,6 @@ func (r *Runtime) ImageExists(name string) bool {
 
 // BuildImage builds an image from the given tar context.
 func (r *Runtime) BuildImage(name string, context []byte, labels map[string]string, quiet bool) error {
-	fmt.Fprintf(os.Stderr, "Building %s...\n", name)
 	args := []string{"build", "-t", name}
 	// Sort labels for determinism
 	labelKeys := make([]string, 0, len(labels))
@@ -289,12 +288,13 @@ func (r *Runtime) RemoveImages(ids []string) {
 }
 
 // EnsureVolume creates the named volume with labels if it doesn't exist.
-func (r *Runtime) EnsureVolume(name string, labels map[string]string) error {
+// Returns (created, error): created is true when the volume was newly created.
+func (r *Runtime) EnsureVolume(name string, labels map[string]string) (bool, error) {
 	inspectCmd := exec.Command(r.CLI, "volume", "inspect", name)
 	inspectCmd.Stdout = nil
 	inspectCmd.Stderr = nil
 	if inspectCmd.Run() == nil {
-		return nil // already exists
+		return false, nil // already exists
 	}
 
 	args := []string{"volume", "create"}
@@ -306,7 +306,7 @@ func (r *Runtime) EnsureVolume(name string, labels map[string]string) error {
 	cmd := exec.Command(r.CLI, args...)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	return cmd.Run()
+	return true, cmd.Run()
 }
 
 // ListCSBVolumes returns names of all csb-managed volumes.
@@ -386,6 +386,9 @@ func StartHostExec(allowRules []string, bind string, containerCLI string) (*exec
 	}
 
 	gatewayIP := containerGatewayIP(containerCLI)
+	if gatewayIP != "" {
+		logInfo("host exec gateway", "ip", gatewayIP)
+	}
 	actualBind := bind
 	if gatewayIP != "" {
 		parts := strings.Split(bind, ":")
@@ -409,6 +412,7 @@ func StartHostExec(allowRules []string, bind string, containerCLI string) (*exec
 	if err := cmd.Start(); err != nil {
 		return nil, "", "", fmt.Errorf("starting broker: %w", err)
 	}
+	logInfo("host exec broker starting", "pid", cmd.Process.Pid, "bind", actualBind)
 
 	// Read the ready JSON line with timeout
 	type readyMsg struct {
@@ -439,6 +443,7 @@ func StartHostExec(allowRules []string, bind string, containerCLI string) (*exec
 			urlHost = "host.docker.internal"
 		}
 		wsURL := fmt.Sprintf("ws://%s:%d/run", urlHost, msg.Port)
+		logInfo("host exec broker ready", "url", wsURL)
 		return cmd, wsURL, msg.Token, nil
 	case err := <-errCh:
 		_ = cmd.Process.Kill()

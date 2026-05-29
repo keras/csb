@@ -40,6 +40,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	csb.InitLogger(cfg.Verbose)
 	csb.InitConfigDir(cfg.ConfigDir, addonsFS)
 
 	rt := csb.NewRuntime(cfg.ContainerCLI())

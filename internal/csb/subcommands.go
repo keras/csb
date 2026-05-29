@@ -11,6 +11,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// addonNames returns a comma-separated list of enabled addon names, or "none".
+func addonNames(cfg *Config) string {
+	if len(cfg.Addons) == 0 {
+		return "none"
+	}
+	names := make([]string, 0, len(cfg.Addons))
+	for _, spec := range cfg.Addons {
+		name, _ := parseAddonSpec(spec)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, ",")
+}
+
 // RunClean interactively selects csb images and volumes to remove.
 func RunClean(cfg *Config, rt *Runtime) error {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
@@ -222,6 +237,23 @@ func RunConfigEdit(cfg *Config) error {
 
 // RunRun executes the main run subcommand.
 func RunRun(cfg *Config, rt *Runtime, entrypointContent, persistContent, hostRunTarXZ []byte) error {
+	// Config summary
+	logInfo("config dir", "path", cfg.ConfigDir, "runtime", cfg.ContainerCLI())
+	if cfg.Workspace != nil {
+		logInfo("workspace", "host", *cfg.Workspace, "container", cfg.Workdir())
+	} else {
+		logInfo("workspace", "mode", "none")
+	}
+	userConfigPath := filepath.Join(cfg.ConfigDir, "config.yaml")
+	if _, err := os.Stat(userConfigPath); err == nil {
+		logInfo("user config", "path", userConfigPath)
+	}
+	if wcp := cfg.WorkdirConfigPath(); wcp != "" {
+		if _, err := os.Stat(wcp); err == nil {
+			logInfo("workdir config", "path", wcp)
+		}
+	}
+
 	// Validate addons exist
 	for _, spec := range cfg.Addons {
 		name, _ := parseAddonSpec(spec)
@@ -234,10 +266,17 @@ func RunRun(cfg *Config, rt *Runtime, entrypointContent, persistContent, hostRun
 			os.Exit(2)
 		}
 	}
+	logInfo("addons", "enabled", addonNames(cfg))
 
 	imgName := ImageName(cfg, string(entrypointContent), string(persistContent), hostRunTarXZ)
 
 	if cfg.Rebuild || !rt.ImageExists(imgName) {
+		reason := "not found locally"
+		if cfg.Rebuild {
+			reason = "--rebuild flag"
+		}
+		fmt.Fprintf(os.Stderr, "Building %s...\n", imgName)
+		logInfo("building image", "image", imgName, "reason", reason)
 		contextTar, err := BuildContextTar(cfg, entrypointContent, persistContent, hostRunTarXZ)
 		if err != nil {
 			return fmt.Errorf("building context: %w", err)
@@ -245,17 +284,25 @@ func RunRun(cfg *Config, rt *Runtime, entrypointContent, persistContent, hostRun
 		if err := rt.BuildImage(imgName, contextTar, ImageLabels(cfg), !cfg.Verbose); err != nil {
 			return fmt.Errorf("building image: %w", err)
 		}
+	} else {
+		logInfo("image up to date", "image", imgName)
 	}
 
-	if err := rt.EnsureVolume(cfg.HomeVolume, VolumeLabels(cfg)); err != nil {
+	created, err := rt.EnsureVolume(cfg.HomeVolume, VolumeLabels(cfg))
+	if err != nil {
 		return fmt.Errorf("ensuring volume: %w", err)
+	}
+	if created {
+		logInfo("volume created", "name", cfg.HomeVolume)
+	} else {
+		logInfo("volume ready", "name", cfg.HomeVolume)
 	}
 
 	var brokerProc *exec.Cmd
 	var brokerURL, brokerToken string
 
 	if cfg.HostExecEnabled {
-		var err error
+		logInfo("starting host exec broker", "bind", cfg.HostExecBind, "allow", strings.Join(cfg.HostExecAllow, ","))
 		brokerProc, brokerURL, brokerToken, err = StartHostExec(cfg.HostExecAllow, cfg.HostExecBind, cfg.ContainerCLI())
 		if err != nil {
 			return fmt.Errorf("starting host exec: %w", err)
@@ -263,15 +310,21 @@ func RunRun(cfg *Config, rt *Runtime, entrypointContent, persistContent, hostRun
 	}
 
 	mounts := ResolveMounts(cfg)
+	for _, m := range mounts {
+		mode := "rw"
+		if m.Readonly {
+			mode = "ro"
+		}
+		logInfo("mount", "host", m.Src, "container", m.Dst, "mode", mode)
+	}
+
 	env := ResolveEnv(cfg, brokerURL, brokerToken)
 	cmd, err := BuildRunCommand(cfg, mounts, env, imgName)
 	if err != nil {
 		return err
 	}
 
-	if cfg.Verbose {
-		fmt.Fprintln(os.Stderr, shJoin(cmd))
-	}
+	logInfo("launching", "command", shJoin(cmd))
 
 	if brokerProc != nil {
 		// Can't use exec when we need to clean up the broker after container exits.
