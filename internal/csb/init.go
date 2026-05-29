@@ -1,7 +1,9 @@
 package csb
 
 import (
+	"embed"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -50,43 +52,56 @@ func renderConfigTemplate() string {
 }
 
 // InitConfigDir creates the config directory with default files if needed.
-func InitConfigDir(configDir string, miseAddonContent, podmanAddonContent, sudoAddonContent, guiAddonContent []byte) {
+// addonsFS is expected to be rooted such that it contains "files/addons/<name>/<file>" entries;
+// those are materialized into <configDir>/addons/<name>/<file>.
+func InitConfigDir(configDir string, addonsFS embed.FS) {
 	if _, err := os.Stat(configDir); os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "Initialising default config at %s …\n", configDir)
 	}
 
-	files := []struct {
-		rel     string
-		content []byte
-		isDir   bool
-	}{
-		{"config.yaml", []byte(renderConfigTemplate()), false},
-		{"home", nil, true},
-		{"addons/mise.sh", miseAddonContent, false},
-		{"addons/podman.sh", podmanAddonContent, false},
-		{"addons/sudo.sh", sudoAddonContent, false},
-		{"addons/gui.sh", guiAddonContent, false},
-	}
-
-	for _, f := range files {
-		path := filepath.Join(configDir, f.rel)
+	writeFile := func(rel string, content []byte) {
+		path := filepath.Join(configDir, rel)
 		if _, err := os.Stat(path); err == nil {
-			continue // already exists
+			return
 		}
-
 		fmt.Fprintf(os.Stderr, "Creating %s …\n", path)
-		if f.isDir {
-			if err := os.MkdirAll(path, 0755); err != nil {
-				fmt.Fprintf(os.Stderr, "csb: warning: failed to create %s: %v\n", path, err)
-			}
-		} else {
-			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-				fmt.Fprintf(os.Stderr, "csb: warning: failed to create dir for %s: %v\n", path, err)
-				continue
-			}
-			if err := os.WriteFile(path, f.content, 0644); err != nil {
-				fmt.Fprintf(os.Stderr, "csb: warning: failed to write %s: %v\n", path, err)
-			}
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "csb: warning: failed to create dir for %s: %v\n", path, err)
+			return
+		}
+		if err := os.WriteFile(path, content, 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "csb: warning: failed to write %s: %v\n", path, err)
 		}
 	}
+
+	mkDir := func(rel string) {
+		path := filepath.Join(configDir, rel)
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		fmt.Fprintf(os.Stderr, "Creating %s …\n", path)
+		if err := os.MkdirAll(path, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "csb: warning: failed to create %s: %v\n", path, err)
+		}
+	}
+
+	writeFile("config.yaml", []byte(renderConfigTemplate()))
+	mkDir("home")
+
+	const embedRoot = "files/addons"
+	_ = fs.WalkDir(addonsFS, embedRoot, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(embedRoot, p)
+		if err != nil {
+			return nil
+		}
+		data, err := addonsFS.ReadFile(p)
+		if err != nil {
+			return nil
+		}
+		writeFile(filepath.Join("addons", rel), data)
+		return nil
+	})
 }

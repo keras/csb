@@ -1,6 +1,6 @@
 //go:build addons
 
-// Package addons_test runs each addon's companion *.test.sh script inside a
+// Package addons_test runs each addon's companion test.sh script inside a
 // freshly built csb container, asserting it exits 0. Opt-in: requires the
 // `addons` build tag and a working Docker or Podman runtime on the host.
 //
@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -62,18 +61,24 @@ gui-start | grep -q "http://localhost:${CSB_PUBLISH_6080}/vnc.html"
 
 func TestAddons(t *testing.T) {
 	addonsDir := filepath.Join(repoRoot, "cmd", "csb", "files", "addons")
-	matches, err := filepath.Glob(filepath.Join(addonsDir, "*.test.sh"))
+	entries, err := os.ReadDir(addonsDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) == 0 {
-		t.Fatal("no *.test.sh files found in " + addonsDir)
-	}
 
-	for _, path := range matches {
-		name := strings.TrimSuffix(filepath.Base(path), ".test.sh")
+	var found int
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		testPath := filepath.Join(addonsDir, name, "test.sh")
+		if _, err := os.Stat(testPath); err != nil {
+			continue
+		}
+		found++
 		t.Run(name, func(t *testing.T) {
-			script, err := os.ReadFile(path)
+			script, err := os.ReadFile(testPath)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -91,5 +96,8 @@ func TestAddons(t *testing.T) {
 				t.Fatalf("addon %s failed: %v\n--- output ---\n%s", name, err, out.String())
 			}
 		})
+	}
+	if found == 0 {
+		t.Fatal("no addon test.sh scripts found under " + addonsDir)
 	}
 }

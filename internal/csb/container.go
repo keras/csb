@@ -180,13 +180,16 @@ func addonScripts(cfg *Config) []string {
 		return scripts
 	}
 	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasSuffix(name, ".sh") {
+		if !e.IsDir() {
 			continue
 		}
-		stem := strings.TrimSuffix(name, ".sh")
-		if addonSet[stem] {
-			scripts = append(scripts, filepath.Join(addonsDir, name))
+		name := e.Name()
+		if !addonSet[name] {
+			continue
+		}
+		install := filepath.Join(addonsDir, name, "install.sh")
+		if _, err := os.Stat(install); err == nil {
+			scripts = append(scripts, install)
 		}
 	}
 	sort.Strings(scripts)
@@ -278,7 +281,9 @@ func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarX
 		if err != nil {
 			return nil, fmt.Errorf("reading addon %s: %w", p, err)
 		}
-		name := "csb/build.d/" + filepath.Base(p)
+		// p = .../addons/<name>/install.sh; tar it as csb/build.d/<name>.sh
+		// so the Dockerfile's `for script in /tmp/build.d/*.sh` loop picks it up.
+		name := "csb/build.d/" + filepath.Base(filepath.Dir(p)) + ".sh"
 		if err := addFile(name, data, 0755); err != nil {
 			return nil, err
 		}

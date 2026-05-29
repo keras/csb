@@ -2,7 +2,7 @@ package main
 
 import (
 	"crypto/rand"
-	_ "embed"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -22,17 +22,8 @@ var entrypointSH []byte
 //go:embed files/csb-persist.sh
 var csbPersistSH []byte
 
-//go:embed files/addons/mise.sh
-var miseAddonSH []byte
-
-//go:embed files/addons/podman.sh
-var podmanAddonSH []byte
-
-//go:embed files/addons/sudo.sh
-var sudoAddonSH []byte
-
-//go:embed files/addons/gui.sh
-var guiAddonSH []byte
+//go:embed all:files/addons
+var addonsFS embed.FS
 
 //go:embed files/csb-host-run.tar.xz
 var hostRunTarXZ []byte
@@ -49,7 +40,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	csb.InitConfigDir(cfg.ConfigDir, miseAddonSH, podmanAddonSH, sudoAddonSH, guiAddonSH)
+	csb.InitConfigDir(cfg.ConfigDir, addonsFS)
 
 	rt := csb.NewRuntime(cfg.ContainerCLI())
 

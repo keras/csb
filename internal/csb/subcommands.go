@@ -224,7 +224,7 @@ func RunConfigEdit(cfg *Config) error {
 func RunRun(cfg *Config, rt *Runtime, entrypointContent, persistContent, hostRunTarXZ []byte) error {
 	// Validate addons exist
 	for _, name := range cfg.Addons {
-		addonPath := filepath.Join(cfg.ConfigDir, "addons", name+".sh")
+		addonPath := filepath.Join(cfg.ConfigDir, "addons", name, "install.sh")
 		if _, err := os.Stat(addonPath); os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "csb: error: addon not found: %s\n", name)
 			os.Exit(2)
