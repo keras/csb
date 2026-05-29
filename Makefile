@@ -12,7 +12,7 @@ GO_BUILD := CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath
 
 GO_SRCS := $(shell find cmd internal -name '*.go') go.mod go.sum
 
-.PHONY: all build build-client build-csb test clean
+.PHONY: all build build-client build-csb test test-addons clean
 
 all: build
 
@@ -42,6 +42,12 @@ build-csb: $(CLIENT_TAR_XZ)
 
 test:
 	go test ./...
+
+# Black-box addon tests: builds csb, then for each cmd/csb/files/addons/*.test.sh
+# launches a container with that addon enabled and runs the script inside.
+# Requires Docker or Podman. Slow; run on demand.
+test-addons:
+	go test -tags addons -count=1 ./internal/addons/...
 
 # ---------------------------------------------------------------------------
 # Clean

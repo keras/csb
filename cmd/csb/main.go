@@ -31,6 +31,9 @@ var podmanAddonSH []byte
 //go:embed files/addons/sudo.sh
 var sudoAddonSH []byte
 
+//go:embed files/addons/gui.sh
+var guiAddonSH []byte
+
 //go:embed files/csb-host-run.tar.xz
 var hostRunTarXZ []byte
 
@@ -46,7 +49,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	csb.InitConfigDir(cfg.ConfigDir, miseAddonSH, podmanAddonSH, sudoAddonSH)
+	csb.InitConfigDir(cfg.ConfigDir, miseAddonSH, podmanAddonSH, sudoAddonSH, guiAddonSH)
 
 	rt := csb.NewRuntime(cfg.ContainerCLI())
 

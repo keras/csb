@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -447,6 +449,38 @@ func shQuote(s string) string {
 
 var shSafeRE = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
 
+// resolveDynamicPublish rewrites bare-port publish specs (e.g. "6080" or
+// "6080/tcp") into "127.0.0.1:<picked>:<containerPort>" with a host port
+// allocated by binding to ":0" and immediately closing. For each rewritten
+// spec, returns a CSB_PUBLISH_<containerPort>=<picked> env var so the
+// container can discover the host-side port.
+//
+// Specs that already include an explicit host port (anything containing ':')
+// pass through unchanged with no env var injected.
+func resolveDynamicPublish(specs []string) ([]string, [][2]string, error) {
+	out := make([]string, 0, len(specs))
+	var env [][2]string
+	for _, spec := range specs {
+		portPart, proto := spec, ""
+		if i := strings.IndexByte(spec, '/'); i >= 0 {
+			portPart, proto = spec[:i], spec[i:]
+		}
+		if strings.ContainsRune(portPart, ':') {
+			out = append(out, spec)
+			continue
+		}
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, nil, fmt.Errorf("allocating dynamic host port for --publish %q: %w", spec, err)
+		}
+		hostPort := l.Addr().(*net.TCPAddr).Port
+		l.Close()
+		out = append(out, fmt.Sprintf("127.0.0.1:%d:%s%s", hostPort, portPart, proto))
+		env = append(env, [2]string{"CSB_PUBLISH_" + portPart, strconv.Itoa(hostPort)})
+	}
+	return out, env, nil
+}
+
 // BuildRunCommand assembles the full container run command.
 func BuildRunCommand(cfg *Config, mounts []Mount, env [][2]string, imageName string) ([]string, error) {
 	if cfg.HostNetwork && len(cfg.Publish) > 0 {
@@ -478,8 +512,15 @@ func BuildRunCommand(cfg *Config, mounts []Mount, env [][2]string, imageName str
 		cmd = append(cmd, "--network", "host")
 	}
 
-	for _, spec := range cfg.Publish {
+	publishSpecs, publishEnv, err := resolveDynamicPublish(cfg.Publish)
+	if err != nil {
+		return nil, err
+	}
+	for _, spec := range publishSpecs {
 		cmd = append(cmd, "-p", spec)
+	}
+	for _, kv := range publishEnv {
+		cmd = append(cmd, "-e", kv[0]+"="+kv[1])
 	}
 
 	// Named volume for home
