@@ -43,10 +43,10 @@ build-csb: $(CLIENT_TAR_XZ)
 test:
 	go test ./...
 
-# Black-box addon tests: builds csb, then for each cmd/csb/files/addons/*.test.sh
+# Black-box addon tests: for each cmd/csb/files/addons/<name>/test.sh,
 # launches a container with that addon enabled and runs the script inside.
 # Requires Docker or Podman. Slow; run on demand.
-test-addons:
+test-addons: $(CSB_CLI)
 	go test -tags addons -count=1 ./internal/addons/...
 
 # ---------------------------------------------------------------------------
