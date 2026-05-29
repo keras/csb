@@ -83,11 +83,8 @@ RUN mkdir -p $CSB_HOME {{.Workdir}} /mnt/csb-home && chmod 777 {{.Workdir}} /mnt
 
 COPY csb/csb-persist /usr/local/bin/csb-persist
 RUN chmod +x /usr/local/bin/csb-persist
-{{- if .HostRunHash}}
 
-# csb-host-run sha256:{{.HostRunHash}}
 COPY csb/csb-host-run /usr/local/bin/csb-host-run
-{{- end}}
 
 # Entrypoint
 COPY entrypoint.sh /entrypoint.sh
@@ -98,17 +95,15 @@ CMD ["bash", "-l"]
 `))
 
 // MakeDockerfile generates the Dockerfile for the given configuration.
-func MakeDockerfile(baseImage string, hostRunHash string) string {
+func MakeDockerfile(baseImage string) string {
 	data := struct {
-		BaseImage   string
-		PkgLine     string
-		Workdir     string
-		HostRunHash string
+		BaseImage string
+		PkgLine   string
+		Workdir   string
 	}{
-		BaseImage:   baseImage,
-		PkgLine:     strings.Join(aptPackages(), " "),
-		Workdir:     ContainerWorkdir,
-		HostRunHash: hostRunHash,
+		BaseImage: baseImage,
+		PkgLine:   strings.Join(aptPackages(), " "),
+		Workdir:   ContainerWorkdir,
 	}
 	var buf bytes.Buffer
 	if err := dockerfileTemplate.Execute(&buf, data); err != nil {
@@ -233,25 +228,23 @@ func ImageName(cfg *Config, entrypointContent, persistContent string, hostRunTar
 		return cfg.Image
 	}
 
-	var hrh string
-	if data, err := hostRunBytes(hostRunTarXZ); err == nil && len(data) > 0 {
-		sum := sha256.Sum256(data)
-		hrh = fmt.Sprintf("%x", sum)
-	}
-	dockerfile := MakeDockerfile(cfg.BaseImage, hrh)
+	dockerfile := MakeDockerfile(cfg.BaseImage)
 
 	instances := addonInstances(cfg)
-	var addonContent strings.Builder
+	hasher := sha256.New()
+	hasher.Write([]byte(dockerfile))
+	hasher.Write([]byte(entrypointContent))
+	hasher.Write([]byte(persistContent))
 	for _, a := range instances {
-		data, err := os.ReadFile(a.Path)
-		if err == nil {
-			addonContent.Write(data)
+		if data, err := os.ReadFile(a.Path); err == nil {
+			hasher.Write(data)
 		}
 	}
-	addonContent.Write(buildRunScript(instances))
-
-	h := sha256.Sum256([]byte(dockerfile + entrypointContent + persistContent + addonContent.String()))
-	return fmt.Sprintf("csb:%x", h)[:4+12] // "csb:" + 12 hex chars
+	hasher.Write(buildRunScript(instances))
+	if data, err := hostRunBytes(hostRunTarXZ); err == nil {
+		hasher.Write(data)
+	}
+	return fmt.Sprintf("csb:%x", hasher.Sum(nil))[:4+12] // "csb:" + 12 hex chars
 }
 
 // BuildContextTar creates an in-memory tar archive for docker build.
@@ -260,12 +253,7 @@ func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarX
 	if err != nil {
 		return nil, fmt.Errorf("decompressing csb-host-run: %w", err)
 	}
-	var hrh string
-	if len(hostRunData) > 0 {
-		sum := sha256.Sum256(hostRunData)
-		hrh = fmt.Sprintf("%x", sum)
-	}
-	dockerfile := MakeDockerfile(cfg.BaseImage, hrh)
+	dockerfile := MakeDockerfile(cfg.BaseImage)
 
 	buf := &bytes.Buffer{}
 	tw := tar.NewWriter(buf)
@@ -324,11 +312,11 @@ func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarX
 		return nil, err
 	}
 
-	// csb-host-run binary (embedded, already decompressed above)
-	if len(hostRunData) > 0 {
-		if err := addFile("csb/csb-host-run", hostRunData, 0755); err != nil {
-			return nil, err
-		}
+	// csb-host-run binary (embedded, already decompressed above). Always
+	// written — possibly empty in tests — so the Dockerfile's unconditional
+	// COPY succeeds without templating.
+	if err := addFile("csb/csb-host-run", hostRunData, 0755); err != nil {
+		return nil, err
 	}
 
 	if err := tw.Close(); err != nil {
