@@ -94,6 +94,11 @@ func InitConfigDir(configDir string, addonsFS embed.FS) {
 		if err != nil || d.IsDir() {
 			return err
 		}
+		// test.sh is a dev artifact (black-box addon tests) — don't ship it
+		// into the user's config dir.
+		if d.Name() == "test.sh" {
+			return nil
+		}
 		rel, err := filepath.Rel(embedRoot, p)
 		if err != nil {
 			return nil
