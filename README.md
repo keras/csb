@@ -43,7 +43,6 @@ csb -- python script.py  # run a command directly
 ```yaml
 # tmux: true
 # tty: true          # default: auto-detect from stdin
-# base_image: debian:stable-slim
 # nested_podman: false
 # addons: [mise]
 # home_volume: csb-home
@@ -161,7 +160,6 @@ With that combination, a kernel vulnerability in the exposed syscall surface is 
 | ------------------- | ---------------------------------------------------------------------------------------- |
 | `CSB_IMAGE`         | Override the image name/tag                                                              |
 | `CSB_RUNTIME`       | Override runtime (`auto`, `docker`, `podman`)                                            |
-| `CSB_BASE_IMAGE`    | Override base image                                                                      |
 | `CSB_NESTED_PODMAN` | Set to `0` to disable nested Podman                                                      |
 | `CSB_HOME_VOLUME`   | Override home volume name (overrides `home_volume:` in config.yaml, default: `csb-home`) |
 | `CSB_CONFIG_DIR`    | Override config directory path (default: `~/.config/csb`)                                |

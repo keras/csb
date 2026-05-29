@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"text/template"
 
 	"github.com/ulikunitz/xz"
 )
@@ -44,7 +43,9 @@ func parseAddonRunArgs(scripts []string) ([]string, error) {
 	return result, nil
 }
 
-var dockerfileTemplate = template.Must(template.New("dockerfile").Parse(`FROM {{.BaseImage}}
+// dockerfile is the static image recipe. Per-build variation comes entirely
+// from the build context (addons, persist script, entrypoint, host-run binary).
+const dockerfile = `FROM debian:stable-slim
 
 RUN apt-get update && apt-get install -y \
     bash-completion gosu libnss-wrapper tmux \
@@ -74,21 +75,7 @@ RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["bash", "-l"]
-`))
-
-// MakeDockerfile generates the Dockerfile for the given configuration.
-func MakeDockerfile(baseImage string) string {
-	data := struct {
-		BaseImage string
-	}{
-		BaseImage: baseImage,
-	}
-	var buf bytes.Buffer
-	if err := dockerfileTemplate.Execute(&buf, data); err != nil {
-		panic(fmt.Sprintf("dockerfile template: %v", err))
-	}
-	return buf.String()
-}
+`
 
 // decompressXZ decompresses an xz-compressed byte slice.
 func decompressXZ(compressed []byte) ([]byte, error) {
@@ -206,8 +193,6 @@ func ImageName(cfg *Config, entrypointContent, persistContent string, hostRunTar
 		return cfg.Image
 	}
 
-	dockerfile := MakeDockerfile(cfg.BaseImage)
-
 	instances := addonInstances(cfg)
 	hasher := sha256.New()
 	hasher.Write([]byte(dockerfile))
@@ -231,7 +216,6 @@ func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarX
 	if err != nil {
 		return nil, fmt.Errorf("decompressing csb-host-run: %w", err)
 	}
-	dockerfile := MakeDockerfile(cfg.BaseImage)
 
 	buf := &bytes.Buffer{}
 	tw := tar.NewWriter(buf)

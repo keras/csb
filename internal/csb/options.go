@@ -52,7 +52,6 @@ type Options struct {
 	HomeVolume      string   `env:"CSB_HOME_VOLUME"  yaml:"home_volume"      default:"csb-home"    example:"csb-home"     help:"named volume for the container home"`
 	Image           string   `env:"CSB_IMAGE"        yaml:"image"            example:"my-custom:latest"                    help:"override the image name/tag"`
 	Runtime         string   `flag:"runtime"         env:"CSB_RUNTIME"       yaml:"runtime"        default:"auto"         example:"auto"         help:"container runtime to use"                 metavar:"auto|docker|podman"`
-	BaseImage       string   `flag:"base-image"      env:"CSB_BASE_IMAGE"    yaml:"base_image"     default:"debian:stable-slim"  example:"debian:stable-slim"  help:"base image for the container"  metavar:"IMAGE"`
 	HostNetwork     bool     `flag:"host-network"    env:"CSB_HOST_NETWORK"  yaml:"host_network"   example:"false"        help:"use host networking"`
 	HostExecEnabled bool     `flag:"host-exec"       env:"CSB_HOST_EXEC"     yaml:"host_exec_enabled"  example:"false"    help:"start host exec broker"`
 	HostExecAllow   []string `flag:"host-exec-allow" yaml:"host_exec_allow"  example:"\n- open *\n- git log **"            help:"allowed host command pattern"              metavar:"RULE"`
