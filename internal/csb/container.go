@@ -18,24 +18,6 @@ import (
 	"github.com/ulikunitz/xz"
 )
 
-// Base packages for the container image. Kept intentionally minimal — anything
-// not strictly required by the entrypoint / persist / user-switching plumbing
-// is opt-in via `addons: ["packages NAME [NAME...]"]`.
-var basePackages = []string{
-	"bash-completion",
-	"gosu",
-	"libnss-wrapper",
-	"tmux",
-}
-
-// aptPackages returns the sorted list of apt packages to install.
-func aptPackages() []string {
-	pkgs := make([]string, len(basePackages))
-	copy(pkgs, basePackages)
-	sort.Strings(pkgs)
-	return pkgs
-}
-
 // parseAddonRunArgs scans enabled addon scripts for "# csb:run-arg" directives
 // and returns deduplicated tokens to append to the container run command.
 func parseAddonRunArgs(scripts []string) ([]string, error) {
@@ -65,7 +47,7 @@ func parseAddonRunArgs(scripts []string) ([]string, error) {
 var dockerfileTemplate = template.Must(template.New("dockerfile").Parse(`FROM {{.BaseImage}}
 
 RUN apt-get update && apt-get install -y \
-    {{.PkgLine}} \
+    bash-completion gosu libnss-wrapper tmux \
     && rm -rf /var/lib/apt/lists/*
 
 # Shell setup
@@ -98,11 +80,9 @@ CMD ["bash", "-l"]
 func MakeDockerfile(baseImage string) string {
 	data := struct {
 		BaseImage string
-		PkgLine   string
 		Workdir   string
 	}{
 		BaseImage: baseImage,
-		PkgLine:   strings.Join(aptPackages(), " "),
 		Workdir:   ContainerWorkdir,
 	}
 	var buf bytes.Buffer
