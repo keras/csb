@@ -79,10 +79,7 @@ RUN printf '\n[ -f /usr/share/bash-completion/bash_completion ] && . /usr/share/
 RUN mkdir -p /etc/csb/entrypoint.d
 
 COPY csb/build.d /tmp/build.d
-RUN apt-get update && \
-    for script in /tmp/build.d/*.sh; do \
-        [ -x "$script" ] && "$script"; \
-    done && rm -rf /tmp/build.d /var/lib/apt/lists/*
+RUN /tmp/build.d/run.sh
 
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 EDITOR=nano CSB_HOME=/home/sandbox
 
@@ -166,6 +163,25 @@ func hostRunBytes(tarXZ []byte) ([]byte, error) {
 	return nil, fmt.Errorf("csb-host-run.%s not found in archive", runtime.GOARCH)
 }
 
+// addonName extracts the addon name from an install-script path of the form
+// ".../addons/<name>/install.sh".
+func addonName(installPath string) string {
+	return filepath.Base(filepath.Dir(installPath))
+}
+
+// buildRunScript returns the bash script copied into the image as
+// /tmp/build.d/run.sh. It drives addon installation in a single RUN layer
+// so the Dockerfile itself stays free of inline shell loops.
+func buildRunScript(scripts []string) []byte {
+	var b strings.Builder
+	b.WriteString("#!/usr/bin/env bash\nset -euo pipefail\napt-get update\n")
+	for _, p := range scripts {
+		fmt.Fprintf(&b, "/tmp/build.d/%s.sh\n", addonName(p))
+	}
+	b.WriteString("rm -rf /tmp/build.d /var/lib/apt/lists/*\n")
+	return []byte(b.String())
+}
+
 // addonScripts returns sorted list of addon script paths that are enabled.
 func addonScripts(cfg *Config) []string {
 	addonsDir := filepath.Join(cfg.ConfigDir, "addons")
@@ -209,13 +225,15 @@ func ImageName(cfg *Config, entrypointContent, persistContent string, hostRunTar
 	}
 	dockerfile := MakeDockerfile(cfg.BaseImage, hrh)
 
+	scripts := addonScripts(cfg)
 	var addonContent strings.Builder
-	for _, p := range addonScripts(cfg) {
+	for _, p := range scripts {
 		data, err := os.ReadFile(p)
 		if err == nil {
 			addonContent.Write(data)
 		}
 	}
+	addonContent.Write(buildRunScript(scripts))
 
 	h := sha256.Sum256([]byte(dockerfile + entrypointContent + persistContent + addonContent.String()))
 	return fmt.Sprintf("csb:%x", h)[:4+12] // "csb:" + 12 hex chars
@@ -275,18 +293,20 @@ func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarX
 		return nil, err
 	}
 
-	// Addon scripts
-	for _, p := range addonScripts(cfg) {
+	// Addon scripts + the run.sh that drives them.
+	scripts := addonScripts(cfg)
+	for _, p := range scripts {
 		data, err := os.ReadFile(p)
 		if err != nil {
 			return nil, fmt.Errorf("reading addon %s: %w", p, err)
 		}
-		// p = .../addons/<name>/install.sh; tar it as csb/build.d/<name>.sh
-		// so the Dockerfile's `for script in /tmp/build.d/*.sh` loop picks it up.
-		name := "csb/build.d/" + filepath.Base(filepath.Dir(p)) + ".sh"
+		name := "csb/build.d/" + addonName(p) + ".sh"
 		if err := addFile(name, data, 0755); err != nil {
 			return nil, err
 		}
+	}
+	if err := addFile("csb/build.d/run.sh", buildRunScript(scripts), 0755); err != nil {
+		return nil, err
 	}
 
 	// csb-host-run binary (embedded, already decompressed above)
