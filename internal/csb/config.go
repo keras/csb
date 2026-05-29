@@ -90,6 +90,7 @@ type Config struct {
 
 	ConfigAction     string // "edit" or "show"
 	ConfigEditTarget string // "user" or "workdir" (for config edit)
+	ConfigShowTarget string // "config" (default) or "context" (for config show)
 	PassthroughArgs  []string
 
 	Options

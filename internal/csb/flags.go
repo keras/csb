@@ -398,9 +398,15 @@ func parseConfigArgs(argv []string, configDir string, preWorkspace *string, yaml
 	positional = positional[1:]
 
 	editTarget := "user"
+	showTarget := "config"
 	switch action {
 	case "show":
-		// no extra args
+		if len(positional) > 0 {
+			showTarget = positional[0]
+		}
+		if showTarget != "config" && showTarget != "context" {
+			return nil, fmt.Errorf("config show target must be 'config' or 'context', got %q", showTarget)
+		}
 	case "edit":
 		if len(positional) > 0 {
 			editTarget = positional[0]
@@ -438,6 +444,7 @@ func parseConfigArgs(argv []string, configDir string, preWorkspace *string, yaml
 		Subcommand:       "config",
 		ConfigAction:     action,
 		ConfigEditTarget: editTarget,
+		ConfigShowTarget: showTarget,
 		Verbose:          verbose,
 		Options:          resolved,
 	}, nil
@@ -447,7 +454,9 @@ func formatConfigHelp() string {
 	return `Usage: csb config <action> [options]
 
 Actions:
-  show                    Print the fully resolved configuration as YAML
+  show [config|context]   Print resolved config YAML, or list the docker
+                          build context (default: config). When the
+                          context listing is piped, the raw tar is sent.
   edit [user|workdir]     Open a config file in $VISUAL/$EDITOR/vi (default: user)
 
 Options:
@@ -464,6 +473,7 @@ Subcommands:
   run               Run a command in an isolated container (default)
   clean             Interactively select csb images and volumes to remove
   config show       Print the fully resolved configuration as YAML
+  config show context  List the docker build context that would be sent
   config edit       Open the user or workdir config file in $VISUAL/$EDITOR/vi
   config edit workdir  Edit the per-workspace config file
 

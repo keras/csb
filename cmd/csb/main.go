@@ -55,7 +55,7 @@ func main() {
 		var err error
 		switch cfg.ConfigAction {
 		case "show":
-			err = csb.RunConfigShow(cfg)
+			err = csb.RunConfigShow(cfg, entrypointSH, csbPersistSH, hostRunTarXZ)
 		case "edit":
 			err = csb.RunConfigEdit(cfg)
 		}

@@ -1,7 +1,11 @@
 package csb
 
 import (
+	"archive/tar"
+	"bytes"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -168,9 +172,13 @@ func padRight(s string, width int) string {
 	return s + strings.Repeat(" ", width-len(s))
 }
 
-// RunConfigEdit opens the target config file in the user's editor.
-// RunConfigShow prints the fully resolved configuration as YAML.
-func RunConfigShow(cfg *Config) error {
+// RunConfigShow prints the fully resolved configuration as YAML, or — when
+// invoked as `csb config show context` — a listing of the docker build
+// context that would be sent for an image build.
+func RunConfigShow(cfg *Config, entrypointContent, persistContent, hostRunTarXZ []byte) error {
+	if cfg.ConfigShowTarget == "context" {
+		return runConfigShowContext(cfg, entrypointContent, persistContent, hostRunTarXZ)
+	}
 	out, err := yaml.Marshal(cfg.Options)
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
@@ -183,6 +191,38 @@ func RunConfigShow(cfg *Config) error {
 	}
 	fmt.Println()
 	fmt.Print(string(out))
+	return nil
+}
+
+// runConfigShowContext outputs the docker build context. When stdout is a
+// TTY it prints a human-readable per-entry listing (mode, size, path);
+// when piped or redirected it streams the raw tar so it can be saved
+// (`csb config show context > ctx.tar`) or piped (`| tar tvf -`,
+// `| docker build -`).
+func runConfigShowContext(cfg *Config, entrypointContent, persistContent, hostRunTarXZ []byte) error {
+	contextTar, err := BuildContextTar(cfg, entrypointContent, persistContent, hostRunTarXZ)
+	if err != nil {
+		return fmt.Errorf("building context: %w", err)
+	}
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		_, err := os.Stdout.Write(contextTar)
+		return err
+	}
+	tr := tar.NewReader(bytes.NewReader(contextTar))
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("reading context tar: %w", err)
+		}
+		mode := fs.FileMode(hdr.Mode & 0777)
+		if hdr.Typeflag == tar.TypeDir {
+			mode |= fs.ModeDir
+		}
+		fmt.Printf("%s  %8d  %s\n", mode, hdr.Size, hdr.Name)
+	}
 	return nil
 }
 
