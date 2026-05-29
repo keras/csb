@@ -9,8 +9,8 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/keras/csb/internal/proto"
 	"github.com/creack/pty"
+	"github.com/keras/csb/internal/proto"
 	"nhooyr.io/websocket"
 )
 

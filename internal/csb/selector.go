@@ -30,8 +30,8 @@ func runSelector(entries []selectorEntry) ([]selectorEntry, bool) {
 	if err != nil {
 		return nil, false
 	}
-	defer term.Restore(fd, oldState)  //nolint
-	defer fmt.Print("\033[?25h")      // restore cursor visibility
+	defer term.Restore(fd, oldState) //nolint
+	defer fmt.Print("\033[?25h")     // restore cursor visibility
 
 	fmt.Print("\033[?25l") // hide cursor
 
@@ -133,7 +133,7 @@ func firstSelectable(entries []selectorEntry, start, dir int) int {
 		if !entries[i].isHeader {
 			return i
 		}
-		i = ((i + dir) % total + total) % total
+		i = ((i+dir)%total + total) % total
 	}
 	return ((start % total) + total) % total
 }

@@ -11,8 +11,8 @@ import (
 	"syscall"
 
 	"github.com/keras/csb/internal/proto"
-	"nhooyr.io/websocket"
 	"golang.org/x/term"
+	"nhooyr.io/websocket"
 )
 
 // Run connects to the broker, sends cmd+args, wires stdio, and returns the exit code.

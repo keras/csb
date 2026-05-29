@@ -100,8 +100,8 @@ func joinArgs(args []string) string {
 
 func TestParse(t *testing.T) {
 	tests := []struct {
-		input   string
-		wantCmd string
+		input    string
+		wantCmd  string
 		wantArgs []string
 		wantErr  bool
 	}{
