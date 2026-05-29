@@ -18,18 +18,14 @@ import (
 	"github.com/ulikunitz/xz"
 )
 
-// Base packages for the container image.
+// Base packages for the container image. Kept intentionally minimal — anything
+// not strictly required by the entrypoint / persist / user-switching plumbing
+// is opt-in via `addons: ["packages NAME [NAME...]"]`.
 var basePackages = []string{
 	"bash-completion",
-	"curl",
-	"git",
 	"gosu",
-	"gpg",
 	"libnss-wrapper",
-	"nano",
-	"pkg-config",
 	"tmux",
-	"zsh",
 }
 
 // aptPackages returns the sorted list of apt packages to install.
@@ -81,7 +77,7 @@ RUN mkdir -p /etc/csb/entrypoint.d
 COPY csb/build.d /tmp/build.d
 RUN /tmp/build.d/run.sh
 
-ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 EDITOR=nano CSB_HOME=/home/sandbox
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 CSB_HOME=/home/sandbox
 
 RUN mkdir -p $CSB_HOME {{.Workdir}} /mnt/csb-home && chmod 777 {{.Workdir}} /mnt/csb-home
 

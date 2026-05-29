@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+apt-get install -y --no-install-recommends ca-certificates curl
+
 curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
 
 printf '\neval "$(mise activate bash)"\n' >> /etc/bash.bashrc
