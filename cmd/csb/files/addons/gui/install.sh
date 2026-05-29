@@ -14,7 +14,7 @@ apt-get install -y --no-install-recommends \
     tigervnc-standalone-server tigervnc-common \
     openbox xterm \
     novnc websockify \
-    procps \
+    procps curl ca-certificates \
     dbus-x11 fonts-dejavu-core
 
 install -m 0755 /dev/stdin /usr/local/bin/gui-start <<'EOF'
