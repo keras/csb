@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -11,22 +12,47 @@ import (
 
 // detectSubcommand scans argv left-to-right for the first non-flag token.
 // Returns (subcommand, remainingArgv).
+// For flags that take a value (non-bool Options flags), the value token is
+// skipped whether the flag appears as --flag value or --flag=value.
+// Unknown flags are treated as not taking a value.
 func detectSubcommand(argv []string) (string, []string) {
-	for i, token := range argv {
+	flagIdx := buildFlagIndex(reflect.TypeOf(Options{}))
+	t := reflect.TypeOf(Options{})
+
+	for i := 0; i < len(argv); i++ {
+		token := argv[i]
 		if token == "--" {
 			break
 		}
-		if !strings.HasPrefix(token, "-") {
-			switch token {
-			case "clean":
-				return "clean", append(argv[:i:i], argv[i+1:]...)
-			case "config", "config-edit":
-				return "config", append(argv[:i:i], argv[i+1:]...)
-			case "run":
-				return "run", append(argv[:i:i], argv[i+1:]...)
-			default:
-				return "run", argv
+		if strings.HasPrefix(token, "-") {
+			// Determine the flag name (strip =value if present).
+			flagName := token
+			if eq := strings.IndexByte(token, '='); eq >= 0 && strings.HasPrefix(token, "--") {
+				flagName = token[:eq]
+				// Value is embedded; no next token to skip.
+				continue
 			}
+			// Two-token form: check if this flag takes a value and skip next token.
+			// Also skip values for structural flags not in the Options flag index.
+			if idx, ok := flagIdx[flagName]; ok {
+				kind := t.Field(idx).Type.Kind()
+				if kind != reflect.Bool {
+					i++ // skip value token
+				}
+			} else if flagName == "--config-dir" || flagName == "--workspace" {
+				i++ // skip value token
+			}
+			continue
+		}
+		switch token {
+		case "clean":
+			return "clean", append(argv[:i:i], argv[i+1:]...)
+		case "config", "config-edit":
+			return "config", append(argv[:i:i], argv[i+1:]...)
+		case "run":
+			return "run", append(argv[:i:i], argv[i+1:]...)
+		default:
+			return "run", argv
 		}
 	}
 	return "run", argv
@@ -362,6 +388,7 @@ func parseConfigArgs(argv []string, configDir string, preWorkspace *string, yaml
 	noWorkspace := false
 
 	var positional []string
+	parser := newOptParser()
 
 	for i := 0; i < len(argv); i++ {
 		arg := argv[i]
@@ -382,10 +409,19 @@ func parseConfigArgs(argv []string, configDir string, preWorkspace *string, yaml
 			i++ // already resolved
 		case strings.HasPrefix(arg, "--config-dir="):
 			// already resolved
-		case strings.HasPrefix(arg, "-"):
-			// ignore unknown flags
 		default:
-			positional = append(positional, arg)
+			newI, handled, err := parser.handle(arg, argv, i)
+			if err != nil {
+				return nil, err
+			}
+			i = newI
+			if !handled {
+				if strings.HasPrefix(arg, "-") {
+					// ignore unknown flags
+				} else {
+					positional = append(positional, arg)
+				}
+			}
 		}
 	}
 
@@ -431,7 +467,7 @@ func parseConfigArgs(argv []string, configDir string, preWorkspace *string, yaml
 		workspace = preWorkspace
 	}
 
-	resolved, err := resolveOptions(nil, yamlCfg)
+	resolved, err := resolveOptions(parser.values, yamlCfg)
 	if err != nil {
 		return nil, err
 	}

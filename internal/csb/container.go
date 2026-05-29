@@ -195,10 +195,6 @@ func dockerfilePath(cfg *Config) string {
 
 // ImageName returns the image name to use for the given config.
 func ImageName(cfg *Config, entrypointContent, persistContent string, hostRunTarXZ []byte) string {
-	if cfg.Image != "" {
-		return cfg.Image
-	}
-
 	dockerfileBytes, _ := os.ReadFile(dockerfilePath(cfg))
 
 	instances := addonInstances(cfg)

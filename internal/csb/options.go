@@ -44,19 +44,18 @@ type Options struct {
 	UseTTY       bool     `flag:"tty"             yaml:"tty"              default:"@autoTTY"    example:"true"         help:"allocate a TTY (default: auto-detect from stdin)"`
 	DefaultShell string   `flag:"shell"           yaml:"default_shell"    default:"bash"        example:"zsh"          help:"shell for new tmux windows, $SHELL, and default startup command"`
 	DefaultCmd   []string `yaml:"default_cmd"                             example:"[vim]"       help:"startup command (default: <default_shell> -l; overridden by positional args)"`
-	Addons       []string `flag:"addon"           yaml:"addons"           default:"mise sudo"   example:"[mise, sudo, gui]" help:"addon to install (NAME [ARGS...])"     metavar:"SPEC"`
+	Addons       []string `flag:"addon"           yaml:"addons"           default:"mise sudo"   example:"\n- mise\n- sudo\n- gui\n- packages git nano" help:"addon to install (NAME [ARGS...])"     metavar:"SPEC"`
 	Arch         string   `flag:"arch"            env:"CSB_ARCH"          yaml:"arch"             default:"@hostArch"   example:"arm64"        validate:"arch"   help:"container arch (amd64|arm64); requires QEMU/binfmt on host when not host's arch"  metavar:"ARCH"`
-	Mount        []Mount  `flag:"mount"           yaml:"mount"            parse:"mount"         example:"\n- ~/.ssh:~/.ssh:ro"  help:"extra bind mounts"                        metavar:"SRC:DST[:MODE]"`
+	Mount        []Mount  `flag:"mount"           yaml:"mount"            parse:"mount"         example:"\n- ~/.gitconfig:~/.gitconfig:ro"  help:"extra bind mounts"                        metavar:"SRC:DST[:MODE]"`
 	EnvForward   []string `flag:"env-forward"     env:"CSB_ENV_FORWARD"   envsep:"fields"       yaml:"env_forward"     example:"[MY_TOKEN, OTHER_VAR]"  help:"host env var names to forward into the container"  metavar:"NAME"`
 	EnvInject    []string `flag:"env"             env:"CSB_ENV"           envsep:"fields"       yaml:"env"             example:"[MY_VAR=hello, DEBUG=1]"  help:"KEY=VALUE pairs to inject into the container"  metavar:"KEY=VALUE"`
 	Publish      []string `flag:"publish"         env:"CSB_PUBLISH"       envsep:"fields"       yaml:"publish"         validate:"publish"     example:"\n- 8080:8080\n- 127.0.0.1:5432:5432"  help:"publish a container port to the host"  metavar:"SPEC"`
 
 	HomeVolume      string   `env:"CSB_HOME_VOLUME"  yaml:"home_volume"      default:"csb-home"    example:"csb-home"     help:"named volume for the container home"`
-	Image           string   `env:"CSB_IMAGE"        yaml:"image"            example:"my-custom:latest"                    help:"override the image name/tag"`
 	Runtime         string   `flag:"runtime"         env:"CSB_RUNTIME"       yaml:"runtime"        default:"auto"         example:"auto"         help:"container runtime to use"                 metavar:"auto|docker|podman"`
 	HostNetwork     bool     `flag:"host-network"    env:"CSB_HOST_NETWORK"  yaml:"host_network"   example:"false"        help:"use host networking"`
 	HostExecEnabled bool     `flag:"host-exec"       env:"CSB_HOST_EXEC"     yaml:"host_exec_enabled"  example:"false"    help:"start host exec broker"`
-	HostExecAllow   []string `flag:"host-exec-allow" yaml:"host_exec_allow"  example:"\n- open *\n- git log **"            help:"allowed host command pattern"              metavar:"RULE"`
+	HostExecAllow   []string `flag:"host-exec-allow" yaml:"host_exec_allow"  example:"\n- open *\n- python main.py **"            help:"allowed host command pattern"              metavar:"RULE"`
 	HostExecBind    string   `yaml:"host_exec_bind"  default:"0.0.0.0:0"     example:"0.0.0.0:0"   help:"host exec broker listen address"`
 }
 
