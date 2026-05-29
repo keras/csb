@@ -163,53 +163,72 @@ func hostRunBytes(tarXZ []byte) ([]byte, error) {
 	return nil, fmt.Errorf("csb-host-run.%s not found in archive", runtime.GOARCH)
 }
 
-// addonName extracts the addon name from an install-script path of the form
-// ".../addons/<name>/install.sh".
-func addonName(installPath string) string {
-	return filepath.Base(filepath.Dir(installPath))
+// addonInstance is an enabled addon resolved to its install script plus the
+// arguments supplied in the user's config (`addons: ["name arg1 arg2"]`).
+type addonInstance struct {
+	Name string
+	Path string // absolute path to install.sh
+	Args []string
+}
+
+// parseAddonSpec splits an "addons" list entry into the addon name and any
+// trailing arguments. Whitespace-only splitting — quoting is not supported.
+func parseAddonSpec(spec string) (name string, args []string) {
+	fields := strings.Fields(spec)
+	if len(fields) == 0 {
+		return "", nil
+	}
+	return fields[0], fields[1:]
 }
 
 // buildRunScript returns the bash script copied into the image as
 // /tmp/build.d/run.sh. It drives addon installation in a single RUN layer
 // so the Dockerfile itself stays free of inline shell loops.
-func buildRunScript(scripts []string) []byte {
+func buildRunScript(instances []addonInstance) []byte {
 	var b strings.Builder
 	b.WriteString("#!/usr/bin/env bash\nset -euo pipefail\napt-get update\n")
-	for _, p := range scripts {
-		fmt.Fprintf(&b, "/tmp/build.d/%s.sh\n", addonName(p))
+	for _, a := range instances {
+		fmt.Fprintf(&b, "/tmp/build.d/%s.sh", a.Name)
+		if len(a.Args) > 0 {
+			b.WriteString(" ")
+			b.WriteString(shJoin(a.Args))
+		}
+		b.WriteString("\n")
 	}
 	b.WriteString("rm -rf /tmp/build.d /var/lib/apt/lists/*\n")
 	return []byte(b.String())
 }
 
-// addonScripts returns sorted list of addon script paths that are enabled.
-func addonScripts(cfg *Config) []string {
+// addonInstances returns the enabled addons (name + install-script path +
+// args) in alphabetical order by name. Duplicate names and missing install
+// scripts are silently skipped; validation happens earlier in RunRun.
+func addonInstances(cfg *Config) []addonInstance {
 	addonsDir := filepath.Join(cfg.ConfigDir, "addons")
-	addonSet := make(map[string]bool)
-	for _, a := range cfg.Addons {
-		addonSet[a] = true
-	}
-
-	var scripts []string
-	entries, err := os.ReadDir(addonsDir)
-	if err != nil {
-		return scripts
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if !addonSet[name] {
+	seen := make(map[string]bool)
+	var out []addonInstance
+	for _, spec := range cfg.Addons {
+		name, args := parseAddonSpec(spec)
+		if name == "" || seen[name] {
 			continue
 		}
 		install := filepath.Join(addonsDir, name, "install.sh")
-		if _, err := os.Stat(install); err == nil {
-			scripts = append(scripts, install)
+		if _, err := os.Stat(install); err != nil {
+			continue
 		}
+		seen[name] = true
+		out = append(out, addonInstance{Name: name, Path: install, Args: args})
 	}
-	sort.Strings(scripts)
-	return scripts
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// addonPaths returns just the install-script paths in addon order.
+func addonPaths(instances []addonInstance) []string {
+	paths := make([]string, len(instances))
+	for i, a := range instances {
+		paths[i] = a.Path
+	}
+	return paths
 }
 
 // ImageName returns the image name to use for the given config.
@@ -225,15 +244,15 @@ func ImageName(cfg *Config, entrypointContent, persistContent string, hostRunTar
 	}
 	dockerfile := MakeDockerfile(cfg.BaseImage, hrh)
 
-	scripts := addonScripts(cfg)
+	instances := addonInstances(cfg)
 	var addonContent strings.Builder
-	for _, p := range scripts {
-		data, err := os.ReadFile(p)
+	for _, a := range instances {
+		data, err := os.ReadFile(a.Path)
 		if err == nil {
 			addonContent.Write(data)
 		}
 	}
-	addonContent.Write(buildRunScript(scripts))
+	addonContent.Write(buildRunScript(instances))
 
 	h := sha256.Sum256([]byte(dockerfile + entrypointContent + persistContent + addonContent.String()))
 	return fmt.Sprintf("csb:%x", h)[:4+12] // "csb:" + 12 hex chars
@@ -294,18 +313,18 @@ func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarX
 	}
 
 	// Addon scripts + the run.sh that drives them.
-	scripts := addonScripts(cfg)
-	for _, p := range scripts {
-		data, err := os.ReadFile(p)
+	instances := addonInstances(cfg)
+	for _, a := range instances {
+		data, err := os.ReadFile(a.Path)
 		if err != nil {
-			return nil, fmt.Errorf("reading addon %s: %w", p, err)
+			return nil, fmt.Errorf("reading addon %s: %w", a.Path, err)
 		}
-		name := "csb/build.d/" + addonName(p) + ".sh"
+		name := "csb/build.d/" + a.Name + ".sh"
 		if err := addFile(name, data, 0755); err != nil {
 			return nil, err
 		}
 	}
-	if err := addFile("csb/build.d/run.sh", buildRunScript(scripts), 0755); err != nil {
+	if err := addFile("csb/build.d/run.sh", buildRunScript(instances), 0755); err != nil {
 		return nil, err
 	}
 
@@ -527,7 +546,7 @@ func BuildRunCommand(cfg *Config, mounts []Mount, env [][2]string, imageName str
 	}
 
 	// Addon run args (from # csb:run-arg directives in enabled addon scripts)
-	addonArgs, err := parseAddonRunArgs(addonScripts(cfg))
+	addonArgs, err := parseAddonRunArgs(addonPaths(addonInstances(cfg)))
 	if err != nil {
 		return nil, err
 	}
