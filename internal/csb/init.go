@@ -86,6 +86,7 @@ func InitConfigDir(configDir string, addonsFS embed.FS) {
 	}
 
 	writeFile("config.yaml", []byte(renderConfigTemplate()))
+	writeFile("Dockerfile", []byte(dockerfile))
 	mkDir("home")
 
 	const embedRoot = "files/addons"

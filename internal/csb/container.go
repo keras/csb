@@ -43,8 +43,10 @@ func parseAddonRunArgs(scripts []string) ([]string, error) {
 	return result, nil
 }
 
-// dockerfile is the static image recipe. Per-build variation comes entirely
-// from the build context (addons, persist script, entrypoint, host-run binary).
+// dockerfile is the default image recipe — seeded into <ConfigDir>/Dockerfile
+// on first run and read from there for every build, so users can edit it.
+// Per-build variation otherwise comes from the build context (addons,
+// persist script, entrypoint, host-run binary).
 const dockerfile = `FROM debian:stable-slim
 
 RUN apt-get update && apt-get install -y \
@@ -187,15 +189,22 @@ func addonPaths(instances []addonInstance) []string {
 	return paths
 }
 
+// dockerfilePath returns the path to the user-editable Dockerfile.
+func dockerfilePath(cfg *Config) string {
+	return filepath.Join(cfg.ConfigDir, "Dockerfile")
+}
+
 // ImageName returns the image name to use for the given config.
 func ImageName(cfg *Config, entrypointContent, persistContent string, hostRunTarXZ []byte) string {
 	if cfg.Image != "" {
 		return cfg.Image
 	}
 
+	dockerfileBytes, _ := os.ReadFile(dockerfilePath(cfg))
+
 	instances := addonInstances(cfg)
 	hasher := sha256.New()
-	hasher.Write([]byte(dockerfile))
+	hasher.Write(dockerfileBytes)
 	hasher.Write([]byte(entrypointContent))
 	hasher.Write([]byte(persistContent))
 	for _, a := range instances {
@@ -215,6 +224,10 @@ func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarX
 	hostRunData, err := hostRunBytes(hostRunTarXZ)
 	if err != nil {
 		return nil, fmt.Errorf("decompressing csb-host-run: %w", err)
+	}
+	dockerfileBytes, err := os.ReadFile(dockerfilePath(cfg))
+	if err != nil {
+		return nil, fmt.Errorf("reading Dockerfile: %w", err)
 	}
 
 	buf := &bytes.Buffer{}
@@ -239,7 +252,7 @@ func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarX
 		data []byte
 	}
 	for _, f := range []contextFile{
-		{"Dockerfile", 0644, []byte(dockerfile)},
+		{"Dockerfile", 0644, dockerfileBytes},
 		{"entrypoint.sh", 0644, entrypointContent},
 		{"csb/csb-persist", 0755, persistContent},
 	} {
