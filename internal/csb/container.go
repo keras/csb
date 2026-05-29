@@ -61,7 +61,7 @@ RUN /tmp/build.d/run.sh
 
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 CSB_HOME=/home/sandbox
 
-RUN mkdir -p $CSB_HOME {{.Workdir}} /mnt/csb-home && chmod 777 {{.Workdir}} /mnt/csb-home
+RUN mkdir -p $CSB_HOME /workspace && chmod 777 /workspace
 
 COPY csb/csb-persist /usr/local/bin/csb-persist
 RUN chmod +x /usr/local/bin/csb-persist
@@ -80,10 +80,8 @@ CMD ["bash", "-l"]
 func MakeDockerfile(baseImage string) string {
 	data := struct {
 		BaseImage string
-		Workdir   string
 	}{
 		BaseImage: baseImage,
-		Workdir:   ContainerWorkdir,
 	}
 	var buf bytes.Buffer
 	if err := dockerfileTemplate.Execute(&buf, data); err != nil {
