@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -92,14 +91,14 @@ func decompressXZ(compressed []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// hostRunBytes extracts the csb-host-run binary for the host architecture from
-// a tar.xz archive containing csb-host-run.amd64 and csb-host-run.arm64.
+// hostRunBytes extracts the csb-host-run binary for the requested architecture
+// from a tar.xz archive containing csb-host-run.amd64 and csb-host-run.arm64.
 // Returns nil if tarXZ is empty (e.g. in tests that pass nil).
-func hostRunBytes(tarXZ []byte) ([]byte, error) {
+func hostRunBytes(tarXZ []byte, arch string) ([]byte, error) {
 	if len(tarXZ) == 0 {
 		return nil, nil
 	}
-	want := "csb-host-run." + runtime.GOARCH
+	want := "csb-host-run." + arch
 	raw, err := decompressXZ(tarXZ)
 	if err != nil {
 		return nil, err
@@ -118,7 +117,7 @@ func hostRunBytes(tarXZ []byte) ([]byte, error) {
 			return buf.Bytes(), nil
 		}
 	}
-	return nil, fmt.Errorf("csb-host-run.%s not found in archive", runtime.GOARCH)
+	return nil, fmt.Errorf("csb-host-run.%s not found in archive", arch)
 }
 
 // addonInstance is an enabled addon resolved to its install script plus the
@@ -213,7 +212,7 @@ func ImageName(cfg *Config, entrypointContent, persistContent string, hostRunTar
 		}
 	}
 	hasher.Write(buildRunScript(instances))
-	if data, err := hostRunBytes(hostRunTarXZ); err == nil {
+	if data, err := hostRunBytes(hostRunTarXZ, cfg.Arch); err == nil {
 		hasher.Write(data)
 	}
 	return fmt.Sprintf("csb:%x", hasher.Sum(nil))[:4+12] // "csb:" + 12 hex chars
@@ -221,7 +220,7 @@ func ImageName(cfg *Config, entrypointContent, persistContent string, hostRunTar
 
 // BuildContextTar creates an in-memory tar archive for docker build.
 func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarXZ []byte) ([]byte, error) {
-	hostRunData, err := hostRunBytes(hostRunTarXZ)
+	hostRunData, err := hostRunBytes(hostRunTarXZ, cfg.Arch)
 	if err != nil {
 		return nil, fmt.Errorf("decompressing csb-host-run: %w", err)
 	}
@@ -490,7 +489,7 @@ func BuildRunCommand(cfg *Config, mounts []Mount, env [][2]string, imageName str
 		return nil, fmt.Errorf("--publish is ignored when --host-network is set; use one or the other")
 	}
 
-	cmd := []string{cfg.ContainerCLI(), "run", "-i"}
+	cmd := []string{cfg.ContainerCLI(), "run", "-i", "--platform", "linux/" + cfg.Arch}
 	if cfg.UseTTY {
 		cmd = append(cmd, "-t")
 	}

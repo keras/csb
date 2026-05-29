@@ -5,6 +5,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"golang.org/x/term"
@@ -44,6 +45,7 @@ type Options struct {
 	DefaultShell string   `flag:"shell"           yaml:"default_shell"    default:"bash"        example:"zsh"          help:"shell for new tmux windows, $SHELL, and default startup command"`
 	DefaultCmd   []string `yaml:"default_cmd"                             example:"[vim]"       help:"startup command (default: <default_shell> -l; overridden by positional args)"`
 	Addons       []string `flag:"addon"           yaml:"addons"           default:"mise sudo"   example:"[mise, sudo, gui]" help:"addon to install (NAME [ARGS...])"     metavar:"SPEC"`
+	Arch         string   `flag:"arch"            env:"CSB_ARCH"          yaml:"arch"             default:"@hostArch"   example:"arm64"        validate:"arch"   help:"container arch (amd64|arm64); requires QEMU/binfmt on host when not host's arch"  metavar:"ARCH"`
 	Mount        []Mount  `flag:"mount"           yaml:"mount"            parse:"mount"         example:"\n- ~/.ssh:~/.ssh:ro"  help:"extra bind mounts"                        metavar:"SRC:DST[:MODE]"`
 	EnvForward   []string `flag:"env-forward"     env:"CSB_ENV_FORWARD"   envsep:"fields"       yaml:"env_forward"     example:"[MY_TOKEN, OTHER_VAR]"  help:"host env var names to forward into the container"  metavar:"NAME"`
 	EnvInject    []string `flag:"env"             env:"CSB_ENV"           envsep:"fields"       yaml:"env"             example:"[MY_VAR=hello, DEBUG=1]"  help:"KEY=VALUE pairs to inject into the container"  metavar:"KEY=VALUE"`
@@ -60,7 +62,8 @@ type Options struct {
 
 // defaultFuncs backs "@name" defaults in struct tags.
 var defaultFuncs = map[string]func() any{
-	"autoTTY": func() any { return term.IsTerminal(int(os.Stdin.Fd())) },
+	"autoTTY":  func() any { return term.IsTerminal(int(os.Stdin.Fd())) },
+	"hostArch": func() any { return runtime.GOARCH },
 }
 
 // parseFuncs backs parse:"name" tags; each func parses a raw string into the slice element type.
@@ -75,6 +78,13 @@ var validateFuncs = map[string]func(any) error{
 			if !portRE.MatchString(spec) {
 				return fmt.Errorf("invalid publish spec %q; expected [[host_ip:]host_port:]container_port[/tcp|udp|sctp]", spec)
 			}
+		}
+		return nil
+	},
+	"arch": func(v any) error {
+		s := v.(string)
+		if s != "amd64" && s != "arm64" {
+			return fmt.Errorf("invalid arch %q; expected amd64 or arm64", s)
 		}
 		return nil
 	},

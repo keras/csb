@@ -32,9 +32,10 @@ func (r *Runtime) ImageExists(name string) bool {
 	return cmd.Run() == nil
 }
 
-// BuildImage builds an image from the given tar context.
-func (r *Runtime) BuildImage(name string, context []byte, labels map[string]string, quiet bool) error {
-	args := []string{"build", "-t", name}
+// BuildImage builds an image from the given tar context. platform is a
+// docker-style "linux/<arch>" string passed to --platform.
+func (r *Runtime) BuildImage(name string, context []byte, labels map[string]string, platform string, quiet bool) error {
+	args := []string{"build", "-t", name, "--platform", platform}
 	// Sort labels for determinism
 	labelKeys := make([]string, 0, len(labels))
 	for k := range labels {

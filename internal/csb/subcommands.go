@@ -321,7 +321,7 @@ func RunRun(cfg *Config, rt *Runtime, entrypointContent, persistContent, hostRun
 		if err != nil {
 			return fmt.Errorf("building context: %w", err)
 		}
-		if err := rt.BuildImage(imgName, contextTar, ImageLabels(cfg), !cfg.Verbose); err != nil {
+		if err := rt.BuildImage(imgName, contextTar, ImageLabels(cfg), "linux/"+cfg.Arch, !cfg.Verbose); err != nil {
 			return fmt.Errorf("building image: %w", err)
 		}
 	} else {
