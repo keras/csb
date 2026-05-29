@@ -240,9 +240,9 @@ func parseRunArgs(argv []string, configDir string, preWorkspace *string, yamlCfg
 	var noWorkspace, rebuild, verbose bool
 
 	parser := newOptParser()
-	var remaining []string
 	passthroughStart := -1
 
+argLoop:
 	for i := 0; i < len(argv); i++ {
 		arg := argv[i]
 
@@ -289,7 +289,9 @@ func parseRunArgs(argv []string, configDir string, preWorkspace *string, yamlCfg
 				if strings.HasPrefix(arg, "-") {
 					return nil, fmt.Errorf("unknown flag: %s", arg)
 				}
-				remaining = append(remaining, arg)
+				// First positional ends csb flag parsing; rest is the command.
+				passthroughStart = i
+				break argLoop
 			}
 		}
 	}
@@ -297,8 +299,6 @@ func parseRunArgs(argv []string, configDir string, preWorkspace *string, yamlCfg
 	var passthrough []string
 	if passthroughStart >= 0 {
 		passthrough = argv[passthroughStart:]
-	} else {
-		passthrough = remaining
 	}
 
 	var workspace *string

@@ -281,6 +281,30 @@ func TestParseArgs_NoFlagOverridesYAML(t *testing.T) {
 	assert.False(t, cfg.UseTmux)
 }
 
+// ── ParseArgs: implicit passthrough after first positional ───────────────────
+
+func TestParseArgs_ImplicitPassthrough(t *testing.T) {
+	t.Setenv("CSB_CONFIG_DIR", t.TempDir())
+	cases := []struct {
+		name     string
+		argv     []string
+		expected []string
+	}{
+		{"bare", []string{"uname", "-a"}, []string{"uname", "-a"}},
+		{"run-explicit", []string{"run", "uname", "-a"}, []string{"uname", "-a"}},
+		{"dash-dash", []string{"run", "--", "uname", "-a"}, []string{"uname", "-a"}},
+		{"flag-before", []string{"--no-tmux", "uname", "-a", "--foo"}, []string{"uname", "-a", "--foo"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ParseArgs(tc.argv)
+			require.NoError(t, err)
+			assert.Equal(t, "run", cfg.Subcommand)
+			assert.Equal(t, tc.expected, cfg.PassthroughArgs)
+		})
+	}
+}
+
 // ── renderConfigTemplate drift guard ─────────────────────────────────────────
 
 func TestRenderConfigTemplate_ContainsAllYAMLKeys(t *testing.T) {
