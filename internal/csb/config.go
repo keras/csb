@@ -16,6 +16,8 @@ type Mount struct {
 	Src      string `yaml:"src"`
 	Dst      string `yaml:"dst"`
 	Readonly bool   `yaml:"readonly"`
+	srcRaw   string // original src (unexpanded ~), preserved for display
+	dstRaw   string // original dst (unexpanded ~), preserved for display
 }
 
 // ToArgs returns the -v flag arguments for this mount.
@@ -25,6 +27,24 @@ func (m Mount) ToArgs() []string {
 		spec += ":ro"
 	}
 	return []string{"-v", spec}
+}
+
+// MarshalYAML renders the mount as a "src:dst:mode" string so `config show`
+// round-trips. Unexpanded ~ paths are preserved, and the mode is always
+// explicit since this is the resolved config.
+func (m Mount) MarshalYAML() (any, error) {
+	src, dst := m.srcRaw, m.dstRaw
+	if src == "" {
+		src = m.Src
+	}
+	if dst == "" {
+		dst = m.Dst
+	}
+	mode := "rw"
+	if m.Readonly {
+		mode = "ro"
+	}
+	return src + ":" + dst + ":" + mode, nil
 }
 
 // ParseMount parses a "src:dst[:mode]" mount string.
@@ -51,6 +71,7 @@ func ParseMount(entry string) (Mount, error) {
 	if src == "" || dst == "" {
 		return Mount{}, fmt.Errorf("mount entry has empty src or dst: %q", entry)
 	}
+	srcRaw, dstRaw = src, dst
 
 	// Expand ~ in src
 	if strings.HasPrefix(src, "~/") {
@@ -74,7 +95,7 @@ func ParseMount(entry string) (Mount, error) {
 		dst = ContainerHome
 	}
 
-	return Mount{Src: src, Dst: dst, Readonly: readonly}, nil
+	return Mount{Src: src, Dst: dst, Readonly: readonly, srcRaw: srcRaw, dstRaw: dstRaw}, nil
 }
 
 // Config holds all parsed CLI options and derived paths.

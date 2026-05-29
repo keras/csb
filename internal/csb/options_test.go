@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -172,7 +173,9 @@ func TestMount_ParsedFromCLI(t *testing.T) {
 	cli := map[int]any{fieldIdx("Mount"): []string{"/src:/dst:ro", "/a:/b"}}
 	opts := resolveWith(t, cli, nil)
 	require.Len(t, opts.Mount, 2)
-	assert.Equal(t, Mount{Src: "/src", Dst: "/dst", Readonly: true}, opts.Mount[0])
+	assert.Equal(t, "/src", opts.Mount[0].Src)
+	assert.Equal(t, "/dst", opts.Mount[0].Dst)
+	assert.True(t, opts.Mount[0].Readonly)
 }
 
 func TestMount_ParseErrorPropagated(t *testing.T) {
@@ -183,6 +186,25 @@ func TestMount_ParsedFromYAML(t *testing.T) {
 	opts := resolveWith(t, nil, map[string]any{"mount": []any{"/x:/y:ro"}})
 	require.Len(t, opts.Mount, 1)
 	assert.Equal(t, "/x", opts.Mount[0].Src)
+}
+
+func TestMount_MarshalYAML_PreservesTildeAndDefaultsRo(t *testing.T) {
+	opts := resolveWith(t, nil, map[string]any{"mount": []any{
+		"~/.gitconfig:~/.gitconfig",
+		"~/.ssh:~/.ssh:rw",
+	}})
+	out, err := yaml.Marshal(opts.Mount)
+	require.NoError(t, err)
+	got := strings.TrimSpace(string(out))
+	assert.Contains(t, got, "- ~/.gitconfig:~/.gitconfig:ro")
+	assert.Contains(t, got, "- ~/.ssh:~/.ssh:rw")
+}
+
+func TestMount_MarshalYAML_ProgrammaticFallsBackToFields(t *testing.T) {
+	m := Mount{Src: "/a", Dst: "/b", Readonly: false}
+	out, err := yaml.Marshal(m)
+	require.NoError(t, err)
+	assert.Equal(t, "/a:/b:rw", strings.TrimSpace(string(out)))
 }
 
 // ── optParser.handle ─────────────────────────────────────────────────────────
