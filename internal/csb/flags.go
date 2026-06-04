@@ -80,19 +80,19 @@ func ParseArgs(argv []string) (*Config, error) {
 			return nil, fmt.Errorf("loading workdir config: %w", err)
 		}
 	}
-	// Merge: workdir overrides user
-	yamlCfg := mergeMaps(userYAML, workdirYAML)
+	// Pass layers low→high: user first, then workdir.
+	yamlLayers := []map[string]interface{}{userYAML, workdirYAML}
 
 	cwd, _ := os.Getwd()
 	home, _ := os.UserHomeDir()
 
 	switch subcommand {
 	case "clean":
-		return parseCleanArgs(subArgv, configDir, preWorkspace, yamlCfg, cwd, home)
+		return parseCleanArgs(subArgv, configDir, preWorkspace, yamlLayers, cwd, home)
 	case "config":
-		return parseConfigArgs(subArgv, configDir, preWorkspace, yamlCfg, cwd, home)
+		return parseConfigArgs(subArgv, configDir, preWorkspace, yamlLayers, cwd, home)
 	default:
-		return parseRunArgs(subArgv, configDir, preWorkspace, yamlCfg, cwd, home)
+		return parseRunArgs(subArgv, configDir, preWorkspace, yamlLayers, cwd, home)
 	}
 }
 
@@ -209,17 +209,6 @@ func loadWorkdirYAMLConfig(configDir, workspace string) (map[string]interface{},
 	return m, nil
 }
 
-func mergeMaps(base, override map[string]interface{}) map[string]interface{} {
-	result := map[string]interface{}{}
-	for k, v := range base {
-		result[k] = v
-	}
-	for k, v := range override {
-		result[k] = v
-	}
-	return result
-}
-
 // yamlString extracts a string from the YAML map, or returns def.
 func yamlString(m map[string]interface{}, key, def string) string {
 	if v, ok := m[key]; ok {
@@ -261,7 +250,7 @@ func yamlStringList(m map[string]interface{}, key string) ([]string, bool) {
 	return nil, false
 }
 
-func parseRunArgs(argv []string, configDir string, preWorkspace *string, yamlCfg map[string]interface{}, cwd, home string) (*Config, error) {
+func parseRunArgs(argv []string, configDir string, preWorkspace *string, yamlLayers []map[string]interface{}, cwd, home string) (*Config, error) {
 	var workspaceFlag string
 	var noWorkspace, rebuild, verbose bool
 
@@ -340,7 +329,7 @@ argLoop:
 		workspace = preWorkspace
 	}
 
-	resolved, err := resolveOptions(parser.values, yamlCfg)
+	resolved, err := resolveOptions(parser.values, yamlLayers...)
 	if err != nil {
 		return nil, err
 	}
@@ -358,7 +347,7 @@ argLoop:
 	}, nil
 }
 
-func parseCleanArgs(argv []string, configDir string, preWorkspace *string, yamlCfg map[string]interface{}, cwd, home string) (*Config, error) {
+func parseCleanArgs(argv []string, configDir string, preWorkspace *string, yamlLayers []map[string]interface{}, cwd, home string) (*Config, error) {
 	verbose := false
 	for _, arg := range argv {
 		if arg == "-v" || arg == "--verbose" {
@@ -366,7 +355,7 @@ func parseCleanArgs(argv []string, configDir string, preWorkspace *string, yamlC
 		}
 	}
 
-	resolved, err := resolveOptions(nil, yamlCfg)
+	resolved, err := resolveOptions(nil, yamlLayers...)
 	if err != nil {
 		return nil, err
 	}
@@ -382,7 +371,7 @@ func parseCleanArgs(argv []string, configDir string, preWorkspace *string, yamlC
 	}, nil
 }
 
-func parseConfigArgs(argv []string, configDir string, preWorkspace *string, yamlCfg map[string]interface{}, cwd, home string) (*Config, error) {
+func parseConfigArgs(argv []string, configDir string, preWorkspace *string, yamlLayers []map[string]interface{}, cwd, home string) (*Config, error) {
 	verbose := false
 	var workspaceFlag string
 	noWorkspace := false
@@ -467,7 +456,7 @@ func parseConfigArgs(argv []string, configDir string, preWorkspace *string, yaml
 		workspace = preWorkspace
 	}
 
-	resolved, err := resolveOptions(parser.values, yamlCfg)
+	resolved, err := resolveOptions(parser.values, yamlLayers...)
 	if err != nil {
 		return nil, err
 	}

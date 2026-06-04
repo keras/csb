@@ -44,7 +44,7 @@ type Options struct {
 	UseTTY       bool     `flag:"tty"             yaml:"tty"              default:"@autoTTY"    example:"true"         help:"allocate a TTY (default: auto-detect from stdin)"`
 	DefaultShell string   `flag:"shell"           yaml:"default_shell"    default:"bash"        example:"zsh"          help:"shell for new tmux windows, $SHELL, and default startup command"`
 	DefaultCmd   []string `yaml:"default_cmd"                             example:"[vim]"       help:"startup command (default: <default_shell> -l; overridden by positional args)"`
-	Addons       []string `flag:"addon"           yaml:"addons"           default:"mise sudo"   example:"\n- mise\n- sudo\n- gui\n- packages git nano" help:"addon to install (NAME [ARGS...])"     metavar:"SPEC"`
+	Addons       []string `flag:"addon"           yaml:"addons"           default:"mise sudo"   dedup:"first"         example:"\n- mise\n- sudo\n- gui\n- packages git nano" help:"addon to install (NAME [ARGS...])"     metavar:"SPEC"`
 	Arch         string   `flag:"arch"            env:"CSB_ARCH"          yaml:"arch"             default:"@hostArch"   example:"arm64"        validate:"arch"   help:"container arch (amd64|arm64); requires QEMU/binfmt on host when not host's arch"  metavar:"ARCH"`
 	Mount        []Mount  `flag:"mount"           yaml:"mount"            parse:"mount"         example:"\n- ~/.gitconfig:~/.gitconfig:ro"  help:"extra bind mounts"                        metavar:"SRC:DST[:MODE]"`
 	EnvForward   []string `flag:"env-forward"     env:"CSB_ENV_FORWARD"   envsep:"fields"       yaml:"env_forward"     example:"[MY_TOKEN, OTHER_VAR]"  help:"host env var names to forward into the container"  metavar:"NAME"`
@@ -98,6 +98,9 @@ func validateTags(t reflect.Type) error {
 
 		if def := f.Tag.Get("default"); def != "" {
 			if strings.HasPrefix(def, "@") {
+				if kind == reflect.Slice {
+					return fmt.Errorf("field %s: @default not supported on slice fields (use a literal default or no default)", f.Name)
+				}
 				if _, ok := defaultFuncs[def[1:]]; !ok {
 					return fmt.Errorf("field %s: unknown @default %q", f.Name, def)
 				}
@@ -130,6 +133,15 @@ func validateTags(t reflect.Type) error {
 			}
 			if f.Tag.Get("env") == "" {
 				return fmt.Errorf("field %s: envsep: tag requires an env: tag", f.Name)
+			}
+		}
+
+		if dedupVal := f.Tag.Get("dedup"); dedupVal != "" {
+			if kind != reflect.Slice {
+				return fmt.Errorf("field %s: dedup: tag requires a slice field, got %s", f.Name, kind)
+			}
+			if dedupVal != "first" {
+				return fmt.Errorf("field %s: unsupported dedup value %q; only \"first\" is supported", f.Name, dedupVal)
 			}
 		}
 	}
@@ -232,10 +244,60 @@ func nextArg(flag string, argv []string, i int, eqVal string, hasEq bool) (strin
 	return argv[i+1], i + 1, nil
 }
 
-// resolveOptions resolves final option values from CLI, environment, YAML config, and defaults.
-// Precedence: CLI > env > yaml > default. cliValues maps Options field index to CLI-supplied value(s).
-// cliValues may be nil (e.g. for subcommands that skip CLI parsing).
-func resolveOptions(cliValues map[int]any, yamlCfg map[string]any) (Options, error) {
+// classifyEntries checks whether all entries are plain (no "+") or all additive (all start with "+").
+// Returns (strippedEntries, isAdditive, error).
+// An empty list is treated as plain (replace-to-empty).
+// Mixed plain+additive returns an error containing "cannot mix".
+// Each entry is trimmed of leading/trailing whitespace before classification so that
+// a stray YAML space (e.g. " +podman") is still treated as additive.
+// An entry that is just "+" or "+ " (empty after stripping the prefix) returns an error
+// whose message contains "empty".
+func classifyEntries(fieldName string, entries []string) ([]string, bool, error) {
+	hasPlain := false
+	hasAdditive := false
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+		if strings.HasPrefix(e, "+") {
+			hasAdditive = true
+		} else {
+			hasPlain = true
+		}
+	}
+	if hasPlain && hasAdditive {
+		return nil, false, fmt.Errorf("%s: cannot mix plain and +additive entries in the same source", fieldName)
+	}
+	stripped := make([]string, 0, len(entries))
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+		tok := strings.TrimPrefix(e, "+")
+		tok = strings.TrimSpace(tok)
+		if e != tok && tok == "" {
+			return nil, false, fmt.Errorf("%s: empty additive entry (+ with no value)", fieldName)
+		}
+		stripped = append(stripped, tok)
+	}
+	return stripped, hasAdditive, nil
+}
+
+// dedupFirst removes duplicate entries from s, keeping the first occurrence.
+func dedupFirst(s []string) []string {
+	seen := make(map[string]bool, len(s))
+	out := make([]string, 0, len(s))
+	for _, v := range s {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// resolveOptions resolves final option values from CLI, environment, YAML layers, and defaults.
+// Precedence for scalar (bool/string): CLI > env > yaml(high) > yaml(low) > default.
+// For slices, bottom-up fold with additive "+" prefix support.
+// yamlLayers are ordered low→high (e.g. user config first, workdir config second).
+// cliValues maps Options field index to CLI-supplied value(s); may be nil.
+func resolveOptions(cliValues map[int]any, yamlLayers ...map[string]any) (Options, error) {
 	var opts Options
 	t := reflect.TypeOf(opts)
 	v := reflect.ValueOf(&opts).Elem()
@@ -250,87 +312,153 @@ func resolveOptions(cliValues map[int]any, yamlCfg map[string]any) (Options, err
 		defaultTag := field.Tag.Get("default")
 		parseTag := field.Tag.Get("parse")
 		validateTag := field.Tag.Get("validate")
+		dedupTag := field.Tag.Get("dedup")
 
-		set := false
+		kind := field.Type.Kind()
 
-		// 1. CLI
-		if cliVal, ok := cliValues[i]; ok {
-			set = true
-			switch field.Type.Kind() {
-			case reflect.Bool:
-				fv.SetBool(cliVal.(bool))
-			case reflect.String:
-				fv.SetString(cliVal.(string))
-			case reflect.Slice:
-				if err := setSliceField(fv, field, cliVal.([]string), parseTag); err != nil {
+		if kind == reflect.Slice {
+			// Bottom-up fold for slice fields.
+			// Layer order: default → yaml[0] → yaml[1] → ... → env → CLI
+
+			// Start accumulator from default.
+			var acc []string
+			if defaultTag != "" && !strings.HasPrefix(defaultTag, "@") {
+				acc = strings.Fields(defaultTag)
+			}
+
+			// Fold yaml layers (low→high).
+			for _, layer := range yamlLayers {
+				if layer == nil || yamlTag == "" {
+					continue
+				}
+				specs, ok := yamlStringList(layer, yamlTag)
+				if !ok {
+					continue
+				}
+				stripped, isAdditive, err := classifyEntries(yamlTag, specs)
+				if err != nil {
 					return opts, err
 				}
+				if isAdditive {
+					acc = append(acc, stripped...)
+				} else {
+					acc = stripped
+				}
 			}
-		}
 
-		// 2. Environment variable
-		if !set && envTag != "" {
-			if env := os.Getenv(envTag); env != "" {
-				set = true
-				switch field.Type.Kind() {
-				case reflect.Bool:
-					fv.SetBool(BoolFromEnv(env))
-				case reflect.String:
-					fv.SetString(env)
-				case reflect.Slice:
+			// Fold env layer.
+			if envTag != "" {
+				if env := os.Getenv(envTag); env != "" {
 					var vals []string
 					if envsepTag == "fields" {
 						vals = strings.Fields(env)
 					} else {
 						vals = []string{env}
 					}
-					if err := setSliceField(fv, field, vals, parseTag); err != nil {
+					stripped, isAdditive, err := classifyEntries(envTag, vals)
+					if err != nil {
 						return opts, err
+					}
+					if isAdditive {
+						acc = append(acc, stripped...)
+					} else {
+						acc = stripped
 					}
 				}
 			}
-		}
 
-		// 3. YAML config
-		// Note: yamlString returns "" for missing or explicitly-empty keys, so
-		// `image: ""` in yaml is treated as unset — consistent with pre-refactor behaviour.
-		if !set && yamlTag != "" {
-			switch field.Type.Kind() {
-			case reflect.Bool:
-				if val, ok := yamlBool(yamlCfg, yamlTag); ok {
-					fv.SetBool(val)
-					set = true
+			// Fold CLI layer.
+			if cliVal, ok := cliValues[i]; ok {
+				vals := cliVal.([]string)
+				cliName := field.Name
+				if flagTag := field.Tag.Get("flag"); flagTag != "" {
+					cliName = "--" + flagTag
 				}
-			case reflect.String:
-				if val := yamlString(yamlCfg, yamlTag, ""); val != "" {
-					fv.SetString(val)
-					set = true
+				stripped, isAdditive, err := classifyEntries(cliName, vals)
+				if err != nil {
+					return opts, err
 				}
-			case reflect.Slice:
-				if specs, ok := yamlStringList(yamlCfg, yamlTag); ok {
-					if err := setSliceField(fv, field, specs, parseTag); err != nil {
-						return opts, err
-					}
-					set = true
+				if isAdditive {
+					acc = append(acc, stripped...)
+				} else {
+					acc = stripped
 				}
 			}
-		}
 
-		// 4. Default
-		if !set && defaultTag != "" {
-			if err := applyDefault(fv, field, defaultTag, parseTag); err != nil {
+			// Apply dedup if requested.
+			if dedupTag == "first" {
+				acc = dedupFirst(acc)
+			}
+
+			// Apply parse: func and set field.
+			if err := setSliceField(fv, field, acc, parseTag); err != nil {
 				return opts, err
 			}
+
+			// Ensure slice is never nil.
+			if fv.IsNil() {
+				fv.Set(reflect.MakeSlice(field.Type, 0, 0))
+			}
+		} else {
+			// Scalar (bool/string): highest layer that is "set" wins.
+			// Precedence high→low: CLI > env > yaml(high→low) > default.
+			set := false
+
+			// 1. CLI
+			if cliVal, ok := cliValues[i]; ok {
+				set = true
+				switch kind {
+				case reflect.Bool:
+					fv.SetBool(cliVal.(bool))
+				case reflect.String:
+					fv.SetString(cliVal.(string))
+				}
+			}
+
+			// 2. Environment variable
+			if !set && envTag != "" {
+				if env := os.Getenv(envTag); env != "" {
+					set = true
+					switch kind {
+					case reflect.Bool:
+						fv.SetBool(BoolFromEnv(env))
+					case reflect.String:
+						fv.SetString(env)
+					}
+				}
+			}
+
+			// 3. YAML layers (high→low: iterate in reverse)
+			if !set && yamlTag != "" {
+				for j := len(yamlLayers) - 1; j >= 0 && !set; j-- {
+					layer := yamlLayers[j]
+					if layer == nil {
+						continue
+					}
+					switch kind {
+					case reflect.Bool:
+						if val, ok := yamlBool(layer, yamlTag); ok {
+							fv.SetBool(val)
+							set = true
+						}
+					case reflect.String:
+						if val := yamlString(layer, yamlTag, ""); val != "" {
+							fv.SetString(val)
+							set = true
+						}
+					}
+				}
+			}
+
+			// 4. Default
+			if !set && defaultTag != "" {
+				if err := applyDefault(fv, field, defaultTag, parseTag); err != nil {
+					return opts, err
+				}
+			}
 		}
 
-		// Ensure slices are never nil.
-		// For []string fields without a parse: tag, setSliceField sets reflect.ValueOf(specs)
-		// which is nil when specs is nil; the guard below catches that case.
-		if field.Type.Kind() == reflect.Slice && fv.IsNil() {
-			fv.Set(reflect.MakeSlice(field.Type, 0, 0))
-		}
-
-		// 5. Validate
+		// Validate
 		if validateTag != "" {
 			if err := validateFuncs[validateTag](fv.Interface()); err != nil {
 				return opts, err

@@ -358,6 +358,255 @@ func TestFormatHelp_ContainsExpectedFlags(t *testing.T) {
 	}
 }
 
+// ── Additive slice resolution ─────────────────────────────────────────────────
+
+// resolveWithLayers is like resolveWith but accepts multiple YAML layers (low→high).
+func resolveWithLayers(t *testing.T, cli map[int]any, layers ...map[string]any) Options {
+	t.Helper()
+	opts, err := resolveOptions(cli, layers...)
+	require.NoError(t, err)
+	return opts
+}
+
+// resolveErrLayers is like resolveErr but accepts multiple YAML layers.
+func resolveErrLayers(t *testing.T, cli map[int]any, layers ...map[string]any) error {
+	t.Helper()
+	_, err := resolveOptions(cli, layers...)
+	return err
+}
+
+// yamlList builds a map[string]any with a []any list value, matching how yaml.v3 unmarshals.
+func yamlList(key string, items ...string) map[string]any {
+	list := make([]any, len(items))
+	for i, s := range items {
+		list[i] = s
+	}
+	return map[string]any{key: list}
+}
+
+// yamlEmptyList builds a map with an explicitly empty []any list.
+func yamlEmptyList(key string) map[string]any {
+	return map[string]any{key: []any{}}
+}
+
+// readStringSlice returns the named []string field from opts via reflection.
+func readStringSlice(opts Options, fieldName string) []string {
+	v := reflect.ValueOf(opts)
+	return v.FieldByName(fieldName).Interface().([]string)
+}
+
+// TestAdditiveSlice_TableDriven consolidates the repetitive []string-slice resolution cases.
+// Rows include original cases 1-11 plus new edge-case rows (fix #1, empty-CLI, publish strip).
+func TestAdditiveSlice_TableDriven(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T) // optional env setup (t.Setenv calls); may be nil
+		cli     map[int]any        // nil if none
+		layers  []map[string]any   // low→high; nil entries allowed
+		field   string             // Options field to inspect
+		want    []string           // expected resolved []string (ignored if wantErr != "")
+		wantErr string             // substring to assert on error; "" = no error
+	}{
+		// ── original cases 1-11 (Addons) ──────────────────────────────────────
+		{
+			name:  "case1: nothing set => default [mise sudo]",
+			field: "Addons",
+			want:  []string{"mise", "sudo"},
+		},
+		{
+			name:   "case2: user yaml replaces default",
+			layers: []map[string]any{yamlList("addons", "gui")},
+			field:  "Addons",
+			want:   []string{"gui"},
+		},
+		{
+			name:   "case3: workdir additive extends user",
+			layers: []map[string]any{yamlList("addons", "mise", "sudo", "gui"), yamlList("addons", "+podman")},
+			field:  "Addons",
+			want:   []string{"mise", "sudo", "gui", "podman"},
+		},
+		{
+			name:   "case4: workdir additive extends default when user unset",
+			layers: []map[string]any{nil, yamlList("addons", "+podman")},
+			field:  "Addons",
+			want:   []string{"mise", "sudo", "podman"},
+		},
+		{
+			name:   "case5: all layers additive",
+			cli:    map[int]any{fieldIdx("Addons"): []string{"+tmux"}},
+			layers: []map[string]any{yamlList("addons", "gui"), yamlList("addons", "+podman")},
+			field:  "Addons",
+			want:   []string{"gui", "podman", "tmux"},
+		},
+		{
+			name:   "case6: bare CLI replaces all yaml layers",
+			cli:    map[int]any{fieldIdx("Addons"): []string{"node"}},
+			layers: []map[string]any{yamlList("addons", "gui"), yamlList("addons", "+podman")},
+			field:  "Addons",
+			want:   []string{"node"},
+		},
+		{
+			name:   "case7: workdir empty list clears all",
+			layers: []map[string]any{yamlList("addons", "gui"), yamlEmptyList("addons")},
+			field:  "Addons",
+			want:   []string{},
+		},
+		{
+			name:   "case8: dedup keeps first occurrence",
+			layers: []map[string]any{yamlList("addons", "mise", "sudo", "gui"), yamlList("addons", "+sudo")},
+			field:  "Addons",
+			want:   []string{"mise", "sudo", "gui"},
+		},
+		{
+			name:    "case9: CLI mixed plain+additive errors with 'cannot mix'",
+			cli:     map[int]any{fieldIdx("Addons"): []string{"gui", "+podman"}},
+			field:   "Addons",
+			wantErr: "cannot mix",
+		},
+		{
+			name:    "case10: YAML mixed plain+additive errors with 'cannot mix'",
+			layers:  []map[string]any{nil, yamlList("addons", "gui", "+podman")},
+			field:   "Addons",
+			wantErr: "cannot mix",
+		},
+		{
+			name:   "case11: both layers bare, higher wins",
+			layers: []map[string]any{yamlList("addons", "gui"), yamlList("addons", "podman")},
+			field:  "Addons",
+			want:   []string{"podman"},
+		},
+		// ── fix #1: trim + empty-token guard ──────────────────────────────────
+		{
+			name:    "literal '+' entry returns error containing 'empty'",
+			layers:  []map[string]any{yamlList("addons", "+")},
+			field:   "Addons",
+			wantErr: "empty",
+		},
+		{
+			name:    "'+  ' (plus-space) entry returns error containing 'empty'",
+			layers:  []map[string]any{yamlList("addons", "+ ")},
+			field:   "Addons",
+			wantErr: "empty",
+		},
+		{
+			name:   "leading space before + is trimmed and treated as additive",
+			layers: []map[string]any{yamlList("addons", "gui"), yamlList("addons", " +podman")},
+			field:  "Addons",
+			want:   []string{"gui", "podman"},
+		},
+		// ── empty CLI slice clears ─────────────────────────────────────────────
+		{
+			name:   "empty CLI slice clears non-empty yaml base",
+			cli:    map[int]any{fieldIdx("Addons"): []string{}},
+			layers: []map[string]any{yamlList("addons", "gui", "podman")},
+			field:  "Addons",
+			want:   []string{},
+		},
+		// ── env-additive fold ─────────────────────────────────────────────────
+		{
+			name: "env additive appends to yaml base (EnvForward)",
+			setup: func(t *testing.T) {
+				t.Setenv("CSB_ENV_FORWARD", "+TOKEN1 +TOKEN2")
+			},
+			layers: []map[string]any{yamlList("env_forward", "BASE_VAR")},
+			field:  "EnvForward",
+			want:   []string{"BASE_VAR", "TOKEN1", "TOKEN2"},
+		},
+		// ── publish validate-after-strip ──────────────────────────────────────
+		{
+			name:   "+8080:8080 publish entry resolves to [8080:8080] without validation error",
+			layers: []map[string]any{yamlList("publish", "+8080:8080")},
+			field:  "Publish",
+			want:   []string{"8080:8080"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.setup != nil {
+				tt.setup(t)
+			}
+			opts, err := resolveOptions(tt.cli, tt.layers...)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			got := readStringSlice(opts, tt.field)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// ── String scalar regressions (kept separate: different column type) ──────────
+
+// TestDefaultShell_WorkdirWins: STRING regression: user "zsh" + workdir "fish" => "fish"
+func TestDefaultShell_WorkdirWins(t *testing.T) {
+	user := map[string]any{"default_shell": "zsh"}
+	workdir := map[string]any{"default_shell": "fish"}
+	opts := resolveWithLayers(t, nil, user, workdir)
+	assert.Equal(t, "fish", opts.DefaultShell)
+}
+
+// TestDefaultShell_UserOnlyNoWorkdir: STRING regression: user "zsh", workdir unset => "zsh"
+func TestDefaultShell_UserOnlyNoWorkdir(t *testing.T) {
+	user := map[string]any{"default_shell": "zsh"}
+	opts := resolveWithLayers(t, nil, user, nil)
+	assert.Equal(t, "zsh", opts.DefaultShell)
+}
+
+// ── Mount additive (kept separate: different element type) ───────────────────
+
+// TestMount_AdditiveNoDedupDupesAllowed: Mount has parse:"mount" and no dedup tag.
+// Additive workdir entry appends; duplicates are preserved.
+func TestMount_AdditiveNoDedupDupesAllowed(t *testing.T) {
+	user := yamlList("mount", "/tmp/a:/mnt/a:ro")
+	workdir := yamlList("mount", "+/tmp/b:/mnt/b:ro")
+	opts := resolveWithLayers(t, nil, user, workdir)
+	require.Len(t, opts.Mount, 2)
+	assert.Equal(t, "/tmp/a", opts.Mount[0].Src)
+	assert.Equal(t, "/tmp/b", opts.Mount[1].Src)
+
+	// Dupes allowed: same mount in both layers appears twice.
+	workdir2 := yamlList("mount", "+/tmp/a:/mnt/a:ro")
+	opts2 := resolveWithLayers(t, nil, user, workdir2)
+	assert.Len(t, opts2.Mount, 2, "mount has no dedup tag, same entry should appear twice")
+	assert.Equal(t, "/tmp/a", opts2.Mount[0].Src)
+	assert.Equal(t, "/tmp/a", opts2.Mount[1].Src)
+}
+
+// ── validateTags: dedup tag ───────────────────────────────────────────────────
+
+func TestValidateTags_DedupOnNonSlice(t *testing.T) {
+	type bad struct {
+		X string `dedup:"first"`
+	}
+	err := validateTags(reflect.TypeOf(bad{}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dedup")
+}
+
+func TestValidateTags_DedupUnknownValue(t *testing.T) {
+	type bad struct {
+		X []string `dedup:"last"`
+	}
+	err := validateTags(reflect.TypeOf(bad{}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dedup")
+}
+
+// ── validateTags: @default on slice guard (fix #3) ───────────────────────────
+
+func TestValidateTags_AtDefaultOnSlice(t *testing.T) {
+	type bad struct {
+		X []string `default:"@something"`
+	}
+	err := validateTags(reflect.TypeOf(bad{}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "@")
+}
+
 // ── shQuote ──────────────────────────────────────────────────────────────────
 
 func TestShQuote(t *testing.T) {

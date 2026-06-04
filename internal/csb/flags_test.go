@@ -111,3 +111,28 @@ func TestParseArgs_CLIArchBeatsEnvAndYAML(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "arm64", cfg.Arch)
 }
+
+// TestParseArgs_WorkdirAdditiveAddonsExtendsUser verifies that a workdir config with
+// additive addons entries (+addon) appends to the user config end-to-end.
+func TestParseArgs_WorkdirAdditiveAddonsExtendsUser(t *testing.T) {
+	dir := t.TempDir()
+
+	// User config: replace default with [gui]
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("addons:\n  - gui\n"),
+		0644,
+	))
+
+	// Workdir config: additive +podman
+	workspace := t.TempDir()
+	workdirCfgPath := workdirConfigPath(dir, workspace)
+	require.NoError(t, os.MkdirAll(filepath.Dir(workdirCfgPath), 0755))
+	require.NoError(t, os.WriteFile(workdirCfgPath, []byte("addons:\n  - +podman\n"), 0644))
+
+	t.Setenv("CSB_CONFIG_DIR", dir)
+
+	cfg, err := ParseArgs([]string{"--workspace", workspace, "--no-tmux", "config", "show"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"gui", "podman"}, cfg.Addons)
+}

@@ -144,17 +144,6 @@ func TestLoadYAMLConfig_EmptyFile(t *testing.T) {
 	assert.NotNil(t, m)
 }
 
-// ── mergeMaps ────────────────────────────────────────────────────────────────
-
-func TestMergeMaps_OverrideWins(t *testing.T) {
-	base := map[string]interface{}{"a": "1", "b": "2"}
-	over := map[string]interface{}{"b": "3", "c": "4"}
-	result := mergeMaps(base, over)
-	assert.Equal(t, "1", result["a"])
-	assert.Equal(t, "3", result["b"])
-	assert.Equal(t, "4", result["c"])
-}
-
 // ── expandUser ───────────────────────────────────────────────────────────────
 
 func TestExpandUser_NoTilde(t *testing.T) {
