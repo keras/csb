@@ -244,45 +244,45 @@ func setupImageCfg(t *testing.T) *Config {
 
 func TestImageName_Format(t *testing.T) {
 	cfg := setupImageCfg(t)
-	name := ImageName(cfg, "ep", "persist", nil)
+	name := ImageName(cfg, "ep", "persist", nil, "")
 	assert.True(t, strings.HasPrefix(name, "csb:"), "got %q", name)
 	assert.Len(t, name, 4+12) // "csb:" + 12 hex chars
 }
 
 func TestImageName_Deterministic(t *testing.T) {
 	cfg := setupImageCfg(t)
-	a := ImageName(cfg, "ep", "persist", nil)
-	b := ImageName(cfg, "ep", "persist", nil)
+	a := ImageName(cfg, "ep", "persist", nil, "")
+	b := ImageName(cfg, "ep", "persist", nil, "")
 	assert.Equal(t, a, b)
 }
 
 func TestImageName_ChangesOnDockerfile(t *testing.T) {
 	cfg := setupImageCfg(t)
-	a := ImageName(cfg, "ep", "persist", nil)
+	a := ImageName(cfg, "ep", "persist", nil, "")
 	require.NoError(t, os.WriteFile(filepath.Join(cfg.ConfigDir, "Dockerfile"), []byte("FROM ubuntu:22.04\n"), 0644))
-	b := ImageName(cfg, "ep", "persist", nil)
+	b := ImageName(cfg, "ep", "persist", nil, "")
 	assert.NotEqual(t, a, b)
 }
 
 func TestImageName_ChangesOnEntrypoint(t *testing.T) {
 	cfg := setupImageCfg(t)
-	a := ImageName(cfg, "ep-v1", "persist", nil)
-	b := ImageName(cfg, "ep-v2", "persist", nil)
+	a := ImageName(cfg, "ep-v1", "persist", nil, "")
+	b := ImageName(cfg, "ep-v2", "persist", nil, "")
 	assert.NotEqual(t, a, b)
 }
 
 func TestImageName_ChangesOnPersist(t *testing.T) {
 	cfg := setupImageCfg(t)
-	a := ImageName(cfg, "ep", "p1", nil)
-	b := ImageName(cfg, "ep", "p2", nil)
+	a := ImageName(cfg, "ep", "p1", nil, "")
+	b := ImageName(cfg, "ep", "p2", nil, "")
 	assert.NotEqual(t, a, b)
 }
 
 func TestImageName_ChangesOnArch(t *testing.T) {
 	cfg := setupImageCfg(t)
-	a := ImageName(cfg, "ep", "persist", nil)
+	a := ImageName(cfg, "ep", "persist", nil, "")
 	cfg.Arch = "arm64"
-	b := ImageName(cfg, "ep", "persist", nil)
+	b := ImageName(cfg, "ep", "persist", nil, "")
 	// arch only affects ImageName via hostRunBytes; with nil tarXZ both produce nil, so arch alone doesn't change hash
 	// but arch is not hashed directly; no change expected with nil tarXZ
 	_ = a
@@ -298,11 +298,18 @@ func TestImageName_ChangesOnAddonScript(t *testing.T) {
 	cfg.Arch = "amd64"
 	cfg.Addons = []string{"myaddon"}
 
-	a := ImageName(cfg, "ep", "persist", nil)
+	a := ImageName(cfg, "ep", "persist", nil, "")
 
 	// Modify addon script
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "addons", "myaddon", "install.sh"), []byte("#!/bin/bash\necho changed\n"), 0755))
-	b := ImageName(cfg, "ep", "persist", nil)
+	b := ImageName(cfg, "ep", "persist", nil, "")
+	assert.NotEqual(t, a, b)
+}
+
+func TestImageName_ChangesOnHelp(t *testing.T) {
+	cfg := setupImageCfg(t)
+	a := ImageName(cfg, "ep", "persist", nil, "help-v1")
+	b := ImageName(cfg, "ep", "persist", nil, "help-v2")
 	assert.NotEqual(t, a, b)
 }
 
@@ -317,13 +324,14 @@ func TestBuildContextTar_ContainsExpectedEntries(t *testing.T) {
 	cfg.Arch = "amd64"
 	cfg.Addons = []string{"myaddon"}
 
-	tarBytes, err := BuildContextTar(cfg, []byte("entrypoint"), []byte("persist"), nil)
+	tarBytes, err := BuildContextTar(cfg, []byte("entrypoint"), []byte("persist"), nil, []byte("help"))
 	require.NoError(t, err)
 
 	entries := tarEntries(t, tarBytes)
 	assert.Contains(t, entries, "Dockerfile")
 	assert.Contains(t, entries, "entrypoint.sh")
 	assert.Contains(t, entries, "csb/csb-persist")
+	assert.Contains(t, entries, "csb/csb-help")
 	assert.Contains(t, entries, "csb/csb-host-run")
 	assert.Contains(t, entries, "csb/build.d/run.sh")
 	assert.Contains(t, entries, "csb/build.d/myaddon.sh")
@@ -337,13 +345,14 @@ func TestBuildContextTar_FileModes(t *testing.T) {
 	cfg.Arch = "amd64"
 	cfg.Addons = nil
 
-	tarBytes, err := BuildContextTar(cfg, []byte("entrypoint"), []byte("persist"), nil)
+	tarBytes, err := BuildContextTar(cfg, []byte("entrypoint"), []byte("persist"), nil, []byte("help"))
 	require.NoError(t, err)
 
 	modes := tarModes(t, tarBytes)
 	assert.Equal(t, int64(0644), modes["Dockerfile"])
 	assert.Equal(t, int64(0644), modes["entrypoint.sh"])
 	assert.Equal(t, int64(0755), modes["csb/csb-persist"])
+	assert.Equal(t, int64(0755), modes["csb/csb-help"])
 	assert.Equal(t, int64(0755), modes["csb/build.d/run.sh"])
 }
 

@@ -22,6 +22,9 @@ var entrypointSH []byte
 //go:embed files/csb-persist.sh
 var csbPersistSH []byte
 
+//go:embed files/csb-help.sh
+var csbHelpSH []byte
+
 //go:embed all:files/addons
 var addonsFS embed.FS
 
@@ -55,7 +58,7 @@ func main() {
 		var err error
 		switch cfg.ConfigAction {
 		case "show":
-			err = csb.RunConfigShow(cfg, entrypointSH, csbPersistSH, hostRunTarXZ)
+			err = csb.RunConfigShow(cfg, entrypointSH, csbPersistSH, hostRunTarXZ, csbHelpSH)
 		case "edit":
 			err = csb.RunConfigEdit(cfg)
 		case "status":
@@ -68,7 +71,7 @@ func main() {
 			os.Exit(1)
 		}
 	default: // "run"
-		if err := csb.RunRun(cfg, rt, addonsFS, entrypointSH, csbPersistSH, hostRunTarXZ); err != nil {
+		if err := csb.RunRun(cfg, rt, addonsFS, entrypointSH, csbPersistSH, hostRunTarXZ, csbHelpSH); err != nil {
 			fmt.Fprintf(os.Stderr, "csb: error: %v\n", err)
 			os.Exit(1)
 		}

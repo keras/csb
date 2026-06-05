@@ -60,3 +60,16 @@ chown "${HOST_UID}:${HOST_GID}" "${XDG_RUNTIME_DIR}"
 mount -o remount,rw /proc/sys 2>/dev/null || true
 EOF
 chmod +x /etc/csb/entrypoint.d/podman.sh
+
+cat <<'EOT' > /etc/csb/help.d/podman
+podman — rootless containers inside the sandbox
+
+  Run nested, rootless containers with podman:
+
+    podman run --rm hello-world
+    podman build -t myimage .
+
+  Uses fuse-overlayfs storage under your home, so images and layers
+  persist across csb runs. Requires the extra capabilities csb grants
+  when this addon is enabled.
+EOT

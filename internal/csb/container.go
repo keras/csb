@@ -56,7 +56,7 @@ RUN apt-get update && apt-get install -y \
 RUN printf '\n[ -f /usr/share/bash-completion/bash_completion ] && . /usr/share/bash-completion/bash_completion\n' \
     >> /etc/bash.bashrc
 
-RUN mkdir -p /etc/csb/entrypoint.d
+RUN mkdir -p /etc/csb/entrypoint.d /etc/csb/help.d
 
 COPY csb/build.d /tmp/build.d
 RUN /tmp/build.d/run.sh
@@ -67,6 +67,18 @@ RUN mkdir -p $CSB_HOME /workspace && chmod 777 /workspace
 
 COPY csb/csb-persist /usr/local/bin/csb-persist
 RUN chmod +x /usr/local/bin/csb-persist
+
+COPY csb/csb-help /usr/local/bin/csb-help
+RUN chmod +x /usr/local/bin/csb-help
+
+# MOTD: print the orientation box on interactive login shells only, so it
+# never pollutes "csb -- cmd" output. Disable with CSB_MOTD=0.
+RUN printf '%s\n' \
+    'case $- in *i*) ;; *) return 0 ;; esac' \
+    '[ -t 1 ] || return 0' \
+    '[ "${CSB_MOTD:-1}" = 0 ] && return 0' \
+    'command -v csb-help >/dev/null 2>&1 && csb-help' \
+    > /etc/profile.d/csb-motd.sh
 
 COPY csb/csb-host-run /usr/local/bin/csb-host-run
 
@@ -152,6 +164,11 @@ func buildRunScript(instances []addonInstance) []byte {
 		}
 		b.WriteString("\n")
 	}
+	// Record the enabled addon names for csb-help's orientation box.
+	b.WriteString(": > /etc/csb/addons\n")
+	for _, a := range instances {
+		fmt.Fprintf(&b, "echo %s >> /etc/csb/addons\n", shJoin([]string{a.Name}))
+	}
 	b.WriteString("rm -rf /tmp/build.d /var/lib/apt/lists/*\n")
 	return []byte(b.String())
 }
@@ -194,7 +211,7 @@ func dockerfilePath(cfg *Config) string {
 }
 
 // ImageName returns the image name to use for the given config.
-func ImageName(cfg *Config, entrypointContent, persistContent string, hostRunTarXZ []byte) string {
+func ImageName(cfg *Config, entrypointContent, persistContent string, hostRunTarXZ []byte, helpContent string) string {
 	dockerfileBytes, _ := os.ReadFile(dockerfilePath(cfg))
 
 	instances := addonInstances(cfg)
@@ -202,6 +219,7 @@ func ImageName(cfg *Config, entrypointContent, persistContent string, hostRunTar
 	hasher.Write(dockerfileBytes)
 	hasher.Write([]byte(entrypointContent))
 	hasher.Write([]byte(persistContent))
+	hasher.Write([]byte(helpContent))
 	for _, a := range instances {
 		if data, err := os.ReadFile(a.Path); err == nil {
 			hasher.Write(data)
@@ -215,7 +233,7 @@ func ImageName(cfg *Config, entrypointContent, persistContent string, hostRunTar
 }
 
 // BuildContextTar creates an in-memory tar archive for docker build.
-func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarXZ []byte) ([]byte, error) {
+func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarXZ, helpContent []byte) ([]byte, error) {
 	hostRunData, err := hostRunBytes(hostRunTarXZ, cfg.Arch)
 	if err != nil {
 		return nil, fmt.Errorf("decompressing csb-host-run: %w", err)
@@ -250,6 +268,7 @@ func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarX
 		{"Dockerfile", 0644, dockerfileBytes},
 		{"entrypoint.sh", 0644, entrypointContent},
 		{"csb/csb-persist", 0755, persistContent},
+		{"csb/csb-help", 0755, helpContent},
 	} {
 		if err := addFile(f.name, f.data, f.mode); err != nil {
 			return nil, err
