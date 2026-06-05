@@ -51,3 +51,27 @@ cat > /etc/csb/entrypoint.d/gui.sh <<'EOT'
 export DISPLAY=:1
 EOT
 chmod +x /etc/csb/entrypoint.d/gui.sh
+
+cat <<'EOT' > /etc/csb/help.d/gui
+gui — lightweight desktop over noVNC
+
+Run a VNC desktop (Xvnc + openbox) reachable from your browser:
+
+    gui-start      start the desktop + noVNC, prints the URL
+    gui-stop       tear it down
+
+The desktop listens on port 6080 inside the sandbox. To reach it from
+the host the port must be PUBLISHED when you start csb — it is not
+exposed automatically:
+
+    csb --addon gui --publish 6080                 # dynamic host port
+    csb --addon gui --publish 127.0.0.1:6080:6080  # fixed host port
+
+gui-start prints the correct URL using the host port csb allocated
+($CSB_PUBLISH_6080); without --publish it falls back to 6080.
+
+Set the resolution/depth before gui-start via CSB_GUI_GEOMETRY (default
+1280x800x24):
+
+    CSB_GUI_GEOMETRY=1920x1080x24 gui-start
+EOT
