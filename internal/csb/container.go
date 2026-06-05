@@ -73,10 +73,13 @@ RUN chmod +x /usr/local/bin/csb-help
 
 # MOTD: print the orientation box on interactive login shells only, so it
 # never pollutes "csb -- cmd" output. Disable with CSB_MOTD=0.
+# A marker in /tmp suppresses repeat display within the same container session.
 RUN printf '%s\n' \
     'case $- in *i*) ;; *) return 0 ;; esac' \
     '[ -t 1 ] || return 0' \
     '[ "${CSB_MOTD:-1}" = 0 ] && return 0' \
+    '[ -f /tmp/.csb-motd-shown ] && return 0' \
+    'touch /tmp/.csb-motd-shown' \
     'command -v csb-help >/dev/null 2>&1 && csb-help' \
     > /etc/profile.d/csb-motd.sh
 
