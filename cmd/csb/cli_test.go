@@ -148,6 +148,60 @@ func TestConfigShowContext(t *testing.T) {
 	}
 }
 
+// TestConfigStatus verifies that, on a freshly seeded config dir, every managed
+// resource reports "up to date".
+func TestConfigStatus(t *testing.T) {
+	dir := t.TempDir()
+	out, ok := runCSB(t, nil, configDirFlag(dir), "--no-workspace", "config", "status")
+	if !ok {
+		t.Fatalf("csb config status exited non-zero; output:\n%s", out)
+	}
+	if !strings.Contains(out, "# csb managed resources") {
+		t.Errorf("status missing header; got:\n%s", out)
+	}
+	if !strings.Contains(out, "Dockerfile") {
+		t.Errorf("status missing Dockerfile row; got:\n%s", out)
+	}
+	if !strings.Contains(out, "All resources up to date.") {
+		t.Errorf("freshly seeded dir should be up to date; got:\n%s", out)
+	}
+}
+
+// TestConfigStatusReportsDrift verifies that an edited managed file is reported
+// as differing.
+func TestConfigStatusReportsDrift(t *testing.T) {
+	dir := t.TempDir()
+	// Seed by running status once, then edit the Dockerfile.
+	runCSB(t, nil, configDirFlag(dir), "--no-workspace", "config", "status")
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0644); err != nil {
+		t.Fatalf("editing Dockerfile: %v", err)
+	}
+	out, ok := runCSB(t, nil, configDirFlag(dir), "--no-workspace", "config", "status")
+	if !ok {
+		t.Fatalf("csb config status exited non-zero; output:\n%s", out)
+	}
+	if !strings.Contains(out, "differs") {
+		t.Errorf("expected drift to be reported; got:\n%s", out)
+	}
+	if !strings.Contains(out, "differ from the shipped version") {
+		t.Errorf("expected summary line; got:\n%s", out)
+	}
+}
+
+// TestConfigUpdateNoTTY verifies config update exits cleanly when there is
+// nothing to do (freshly seeded dir), without requiring a terminal.
+func TestConfigUpdateNoTTY(t *testing.T) {
+	dir := t.TempDir()
+	runCSB(t, nil, configDirFlag(dir), "--no-workspace", "config", "status") // seed
+	out, ok := runCSB(t, nil, configDirFlag(dir), "--no-workspace", "config", "update")
+	if !ok {
+		t.Fatalf("csb config update exited non-zero; output:\n%s", out)
+	}
+	if !strings.Contains(out, "All resources up to date.") {
+		t.Errorf("expected 'All resources up to date.'; got:\n%s", out)
+	}
+}
+
 // TestArchEnvOverride verifies that the CSB_ARCH env var overrides the
 // YAML arch value in the resolved config shown by config show.
 func TestArchEnvOverride(t *testing.T) {

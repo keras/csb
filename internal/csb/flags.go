@@ -439,8 +439,10 @@ func parseConfigArgs(argv []string, configDir string, preWorkspace *string, yaml
 		if editTarget != "user" && editTarget != "workdir" {
 			return nil, fmt.Errorf("config edit target must be 'user' or 'workdir', got %q", editTarget)
 		}
+	case "status", "update":
+		// No targets or flags.
 	default:
-		return nil, fmt.Errorf("unknown config action %q; expected 'show' or 'edit'", action)
+		return nil, fmt.Errorf("unknown config action %q; expected 'show', 'edit', 'status', or 'update'", action)
 	}
 
 	var workspace *string
@@ -483,6 +485,10 @@ Actions:
                           build context (default: config). When the
                           context listing is piped, the raw tar is sent.
   edit [user|workdir]     Open a config file in $VISUAL/$EDITOR/vi (default: user)
+  status                  Show which shipped resources (Dockerfile, addons)
+                          differ from this binary's versions
+  update                  Interactively overwrite shipped resources with this
+                          binary's versions (edited files are backed up to .bak)
 
 Options:
   --workspace PATH        workspace directory (default: CWD)
@@ -501,6 +507,8 @@ Subcommands:
   config show context  List the docker build context that would be sent
   config edit       Open the user or workdir config file in $VISUAL/$EDITOR/vi
   config edit workdir  Edit the per-workspace config file
+  config status     Show which shipped resources differ from this binary
+  config update     Interactively update shipped resources (Dockerfile, addons)
 
 Flags:
   --workspace PATH          host directory to mount as the workspace (default: CWD)

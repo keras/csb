@@ -1,12 +1,12 @@
 package csb
 
 import (
-	"embed"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 )
 
@@ -53,8 +53,10 @@ func renderConfigTemplate() string {
 
 // InitConfigDir creates the config directory with default files if needed.
 // addonsFS is expected to be rooted such that it contains "files/addons/<name>/<file>" entries;
-// those are materialized into <configDir>/addons/<name>/<file>.
-func InitConfigDir(configDir string, addonsFS embed.FS) {
+// those are materialized into <configDir>/addons/<name>/<file>. The Dockerfile and addon
+// install scripts come from managedEmbeddedFiles, which the sync commands also use so that
+// seeding and drift detection always agree on the managed set.
+func InitConfigDir(configDir string, addonsFS fs.FS) {
 	if _, err := os.Stat(configDir); os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "Initialising default config at %s …\n", configDir)
 	}
@@ -69,7 +71,7 @@ func InitConfigDir(configDir string, addonsFS embed.FS) {
 			fmt.Fprintf(os.Stderr, "csb: warning: failed to create dir for %s: %v\n", path, err)
 			return
 		}
-		if err := os.WriteFile(path, content, 0644); err != nil {
+		if err := os.WriteFile(path, content, embeddedFileMode(rel)); err != nil {
 			fmt.Fprintf(os.Stderr, "csb: warning: failed to write %s: %v\n", path, err)
 		}
 	}
@@ -86,28 +88,20 @@ func InitConfigDir(configDir string, addonsFS embed.FS) {
 	}
 
 	writeFile("config.yaml", []byte(renderConfigTemplate()))
-	writeFile("Dockerfile", []byte(dockerfile))
 	mkDir("home")
 
-	const embedRoot = "files/addons"
-	_ = fs.WalkDir(addonsFS, embedRoot, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		// test.sh is a dev artifact (black-box addon tests) — don't ship it
-		// into the user's config dir.
-		if d.Name() == "test.sh" {
-			return nil
-		}
-		rel, err := filepath.Rel(embedRoot, p)
-		if err != nil {
-			return nil
-		}
-		data, err := addonsFS.ReadFile(p)
-		if err != nil {
-			return nil
-		}
-		writeFile(filepath.Join("addons", rel), data)
-		return nil
-	})
+	// Dockerfile + addon install scripts, from the shared managed set.
+	managed, err := managedEmbeddedFiles(addonsFS)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "csb: warning: failed to enumerate shipped resources: %v\n", err)
+		return
+	}
+	rels := make([]string, 0, len(managed))
+	for rel := range managed {
+		rels = append(rels, rel)
+	}
+	sort.Strings(rels)
+	for _, rel := range rels {
+		writeFile(rel, managed[rel])
+	}
 }

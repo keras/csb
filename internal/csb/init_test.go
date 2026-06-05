@@ -1,7 +1,6 @@
 package csb
 
 import (
-	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,22 +14,31 @@ import (
 
 func TestInitConfigDir_CreatesDefaults(t *testing.T) {
 	dir := t.TempDir()
-	// Build a minimal embed.FS with one addon file
 	memFS := fstest.MapFS{
 		"files/addons/mise/install.sh": &fstest.MapFile{
 			Data: []byte("#!/bin/bash\necho mise\n"),
 			Mode: 0755,
 		},
+		// test.sh is a dev artifact and must not be seeded into the config dir.
+		"files/addons/mise/test.sh": &fstest.MapFile{
+			Data: []byte("#!/bin/bash\ntrue\n"),
+			Mode: 0755,
+		},
 	}
-	var embedFS fs.FS = memFS
-	// embed.FS can't be created at runtime; cast memFS to embed.FS workaround:
-	// InitConfigDir takes embed.FS. We need to use the embed package.
-	// Skip: use the exported function via reflection isn't clean.
-	// Instead, test the observable side effects by calling indirectly via the
-	// internal writeFile / mkDir closures — just verify the function creates files.
-	_ = embedFS
-	_ = dir
-	t.Skip("InitConfigDir requires embed.FS; covered via integration")
+
+	InitConfigDir(dir, memFS)
+
+	for _, rel := range []string{"config.yaml", "Dockerfile", "addons/mise/install.sh"} {
+		_, err := os.Stat(filepath.Join(dir, rel))
+		assert.NoError(t, err, "expected %s to be created", rel)
+	}
+	// home dir created
+	info, err := os.Stat(filepath.Join(dir, "home"))
+	require.NoError(t, err)
+	assert.True(t, info.IsDir())
+	// test.sh must NOT be seeded
+	_, err = os.Stat(filepath.Join(dir, "addons/mise/test.sh"))
+	assert.True(t, os.IsNotExist(err), "test.sh should not be seeded")
 }
 
 // ── renderConfigTemplate (already covered; add smoke test) ───────────────────

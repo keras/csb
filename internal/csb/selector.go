@@ -13,6 +13,7 @@ type selectorEntry struct {
 	isHeader bool
 	imageID  string
 	volName  string
+	syncPath string
 }
 
 // runSelector shows an interactive terminal checkbox selector.

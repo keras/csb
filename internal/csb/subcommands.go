@@ -276,9 +276,16 @@ func RunConfigEdit(cfg *Config) error {
 }
 
 // RunRun executes the main run subcommand.
-func RunRun(cfg *Config, rt *Runtime, entrypointContent, persistContent, hostRunTarXZ []byte) error {
+func RunRun(cfg *Config, rt *Runtime, addonsFS fs.FS, entrypointContent, persistContent, hostRunTarXZ []byte) error {
 	// Config summary
 	logInfo("config dir", "path", cfg.ConfigDir, "runtime", cfg.ContainerCLI())
+
+	// Verbose nudge when shipped resources have drifted from this binary.
+	if embedded, err := managedEmbeddedFiles(addonsFS); err == nil {
+		if n := pendingUpdateCount(cfg.ConfigDir, embedded); n > 0 {
+			logInfo("shipped resources", "differ", n, "hint", "csb config status")
+		}
+	}
 	if cfg.Workspace != nil {
 		logInfo("workspace", "host", *cfg.Workspace, "container", cfg.Workdir())
 	} else {

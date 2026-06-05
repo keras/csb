@@ -58,13 +58,17 @@ func main() {
 			err = csb.RunConfigShow(cfg, entrypointSH, csbPersistSH, hostRunTarXZ)
 		case "edit":
 			err = csb.RunConfigEdit(cfg)
+		case "status":
+			err = csb.RunConfigStatus(cfg, addonsFS)
+		case "update":
+			err = csb.RunConfigUpdate(cfg, addonsFS)
 		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "csb: error: %v\n", err)
 			os.Exit(1)
 		}
 	default: // "run"
-		if err := csb.RunRun(cfg, rt, entrypointSH, csbPersistSH, hostRunTarXZ); err != nil {
+		if err := csb.RunRun(cfg, rt, addonsFS, entrypointSH, csbPersistSH, hostRunTarXZ); err != nil {
 			fmt.Fprintf(os.Stderr, "csb: error: %v\n", err)
 			os.Exit(1)
 		}

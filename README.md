@@ -58,6 +58,18 @@ The directory is bind-mounted to `/mnt/csb-home` inside the container. At startu
 
 Use `--config-dir PATH` (or `CSB_CONFIG_DIR`) to point csb at a different config directory — useful for isolating separate tool profiles.
 
+### Keeping shipped resources in sync
+
+The `Dockerfile` and addon install scripts under `~/.config/csb/` are seeded from the csb
+binary on first run and are yours to edit. Because the seeder never overwrites an existing
+file, an updated binary may ship newer versions while your config dir keeps using the old
+ones. Two subcommands make this visible and fixable:
+
+```bash
+csb config status   # list Dockerfile + addons and whether they match the embedded versions
+csb config update   # interactively pick which to overwrite with the shipped version
+```
+
 ### csb-persist
 
 To promote a home directory entry to the host config overlay from inside a running container, use `csb-persist`:
