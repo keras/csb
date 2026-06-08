@@ -53,6 +53,7 @@ type Options struct {
 
 	HomeVolume      string   `env:"CSB_HOME_VOLUME"  yaml:"home_volume"      default:"csb-home"    example:"csb-home"     help:"named volume for the container home"`
 	Runtime         string   `flag:"runtime"         env:"CSB_RUNTIME"       yaml:"runtime"        default:"auto"         example:"auto"         help:"container runtime to use"                 metavar:"auto|docker|podman"`
+	Motd            bool     `flag:"motd"            env:"CSB_MOTD"          yaml:"motd"           default:"@trueDefault" example:"false"        help:"print the welcome message on interactive login (--no-motd to disable)"`
 	HostNetwork     bool     `flag:"host-network"    env:"CSB_HOST_NETWORK"  yaml:"host_network"   example:"false"        help:"use host networking"`
 	HostExecEnabled bool     `flag:"host-exec"       env:"CSB_HOST_EXEC"     yaml:"host_exec_enabled"  example:"false"    help:"start host exec broker"`
 	HostExecAllow   []string `flag:"host-exec-allow" yaml:"host_exec_allow"  example:"\n- open *\n- python main.py **"            help:"allowed host command pattern"              metavar:"RULE"`
@@ -61,8 +62,9 @@ type Options struct {
 
 // defaultFuncs backs "@name" defaults in struct tags.
 var defaultFuncs = map[string]func() any{
-	"autoTTY":  func() any { return term.IsTerminal(int(os.Stdin.Fd())) },
-	"hostArch": func() any { return runtime.GOARCH },
+	"autoTTY":     func() any { return term.IsTerminal(int(os.Stdin.Fd())) },
+	"hostArch":    func() any { return runtime.GOARCH },
+	"trueDefault": func() any { return true },
 }
 
 // parseFuncs backs parse:"name" tags; each func parses a raw string into the slice element type.

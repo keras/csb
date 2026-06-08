@@ -85,7 +85,7 @@ _render_box() {
         "$(_row workspace "$workspace")" \
         "$(_row home "persists across runs · csb-help persistence")" \
         "$(_row addons "$addons")" \
-        "$(_row help "csb-help <topic>  ($topics)  ·  exit to leave")"
+        "$(_row help "csb-help <topic>  ($topics)")"
 }
 
 _topic_persistence() {

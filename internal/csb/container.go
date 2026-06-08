@@ -370,6 +370,9 @@ func ResolveEnv(cfg *Config, brokerURL, brokerToken string) [][2]string {
 	if cfg.Verbose {
 		env = append(env, [2]string{"CSB_VERBOSE", "1"})
 	}
+	if !cfg.Motd {
+		env = append(env, [2]string{"CSB_MOTD", "0"})
+	}
 
 	// env_forward
 	for _, name := range cfg.EnvForward {
