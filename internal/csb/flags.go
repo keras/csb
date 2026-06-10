@@ -10,36 +10,76 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// detectSubcommand scans argv left-to-right for the first non-flag token.
-// Returns (subcommand, remainingArgv).
-// For flags that take a value (non-bool Options flags), the value token is
-// skipped whether the flag appears as --flag value or --flag=value.
-// Unknown flags are treated as not taking a value.
-func detectSubcommand(argv []string) (string, []string) {
-	flagIdx := buildFlagIndex(reflect.TypeOf(Options{}))
-	t := reflect.TypeOf(Options{})
+// bootParams are the locator flags that must be resolved before any YAML is
+// loaded, because they determine where the YAML lives (config dir) and which
+// per-workdir overlay applies (workspace). They flow through the same struct-tag
+// machinery as Options, but carry no yaml: tag and resolve from CLI > env >
+// default only — putting either in YAML would be circular or meaningless.
+type bootParams struct {
+	ConfigDir   string `flag:"config-dir"   env:"CSB_CONFIG_DIR" default:"@defaultConfigDir" help:"host directory for csb config (default: ~/.config/csb)" metavar:"PATH"`
+	Workspace   string `flag:"workspace"    env:"CSB_WORKSPACE"  default:"@cwd"             help:"host directory to mount as the workspace (default: CWD)" metavar:"PATH"`
+	NoWorkspace bool   `flag:"no-workspace"                                                 help:"ephemeral workspace, no host directory mounted"`
+}
 
+// runFlags are execution-control flags for the run subcommand. They map to
+// Config (not Options/YAML), but use the same flag: machinery so each flag's
+// name and help text live in exactly one place. -v/--verbose stays bespoke
+// because it carries a short alias the parser does not model.
+type runFlags struct {
+	Rebuild bool `flag:"rebuild" help:"force a full image rebuild"`
+}
+
+func init() {
+	// Default funcs backing bootParams' @defaults. Registered here (not in the
+	// options.go literal) so the locator machinery stays self-contained.
+	defaultFuncs["cwd"] = func() any {
+		cwd, _ := os.Getwd()
+		return cwd
+	}
+	defaultFuncs["defaultConfigDir"] = func() any {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		return filepath.Join(home, ".config", "csb")
+	}
+	for _, t := range []reflect.Type{reflect.TypeOf(bootParams{}), reflect.TypeOf(runFlags{})} {
+		if err := validateTags(t); err != nil {
+			panic("csb flags: " + err.Error())
+		}
+	}
+}
+
+// flagTakesValue reports, for a "--name" token, whether the flag consumes the
+// following token as its value. It consults every struct that defines CLI flags
+// so the subcommand scan never hard-codes which flags take values.
+func flagTakesValue(flagName string) bool {
+	for _, t := range []reflect.Type{reflect.TypeOf(bootParams{}), reflect.TypeOf(runFlags{}), reflect.TypeOf(Options{})} {
+		for i := range t.NumField() {
+			f := t.Field(i)
+			if f.Tag.Get("flag") != "" && "--"+f.Tag.Get("flag") == flagName {
+				return f.Type.Kind() != reflect.Bool
+			}
+		}
+	}
+	return false
+}
+
+// detectSubcommand scans argv left-to-right for the first non-flag token.
+// Returns (subcommand, remainingArgv). Value tokens of value-taking flags are
+// skipped (both --flag value and --flag=value forms). Unknown flags are treated
+// as not taking a value.
+func detectSubcommand(argv []string) (string, []string) {
 	for i := 0; i < len(argv); i++ {
 		token := argv[i]
 		if token == "--" {
 			break
 		}
 		if strings.HasPrefix(token, "-") {
-			// Determine the flag name (strip =value if present).
-			flagName := token
 			if eq := strings.IndexByte(token, '='); eq >= 0 && strings.HasPrefix(token, "--") {
-				flagName = token[:eq]
-				// Value is embedded; no next token to skip.
-				continue
+				continue // value embedded; nothing to skip
 			}
-			// Two-token form: check if this flag takes a value and skip next token.
-			// Also skip values for structural flags not in the Options flag index.
-			if idx, ok := flagIdx[flagName]; ok {
-				kind := t.Field(idx).Type.Kind()
-				if kind != reflect.Bool {
-					i++ // skip value token
-				}
-			} else if flagName == "--config-dir" || flagName == "--workspace" {
+			if flagTakesValue(token) {
 				i++ // skip value token
 			}
 			continue
@@ -58,14 +98,134 @@ func detectSubcommand(argv []string) (string, []string) {
 	return "run", argv
 }
 
+// parsedFlags is the result of a single walk over argv: collected CLI values for
+// each flag struct plus the structural bits and command boundary.
+type parsedFlags struct {
+	bootVals    map[int]any
+	runVals     map[int]any
+	optVals     map[int]any
+	verbose     bool
+	positional  []string // config subcommand: action + targets
+	passthrough []string // run subcommand: the command after csb's flags
+}
+
+// parseFlags walks argv once, classifying every token as a bootstrap flag, a
+// run-control flag, an Options flag, a structural flag, a positional, or the
+// start of the passthrough command. Positional and unknown-flag handling depend
+// on the already-detected subcommand. Locator flags after the command boundary
+// (-- or the first run positional) are left for the inner command, consistent
+// with all other flags. run-control flags are only recognized for run.
+func parseFlags(argv []string, subcommand string) (parsedFlags, error) {
+	boot := newOptParserFor(reflect.TypeOf(bootParams{}))
+	run := newOptParserFor(reflect.TypeOf(runFlags{}))
+	opt := newOptParser()
+	pf := parsedFlags{bootVals: boot.values, runVals: run.values, optVals: opt.values}
+	passthroughStart := -1
+
+loop:
+	for i := 0; i < len(argv); i++ {
+		arg := argv[i]
+
+		switch {
+		case arg == "--":
+			passthroughStart = i + 1
+			break loop
+		case arg == "-v" || arg == "--verbose":
+			pf.verbose = true
+			continue
+		case arg == "--help-config":
+			if subcommand == "run" {
+				fmt.Print(formatHelpFull())
+				os.Exit(0)
+			}
+			continue
+		case arg == "-h" || arg == "--help":
+			switch subcommand {
+			case "config":
+				fmt.Print(formatConfigHelp())
+				os.Exit(0)
+			case "run":
+				fmt.Print(formatHelp())
+				os.Exit(0)
+			}
+			continue // clean has no dedicated help screen
+		}
+
+		if ni, handled, err := boot.handle(arg, argv, i); err != nil {
+			return pf, err
+		} else if handled {
+			i = ni
+			continue
+		}
+		// run-control flags apply only to run; elsewhere they fall through to the
+		// unknown-flag path and are ignored.
+		if subcommand == "run" {
+			if ni, handled, err := run.handle(arg, argv, i); err != nil {
+				return pf, err
+			} else if handled {
+				i = ni
+				continue
+			}
+		}
+		if ni, handled, err := opt.handle(arg, argv, i); err != nil {
+			return pf, err
+		} else if handled {
+			i = ni
+			continue
+		}
+
+		if strings.HasPrefix(arg, "-") {
+			if subcommand == "run" {
+				return pf, fmt.Errorf("unknown flag: %s", arg)
+			}
+			continue // config/clean ignore unknown flags
+		}
+
+		// First positional.
+		switch subcommand {
+		case "run":
+			passthroughStart = i
+			break loop
+		case "config":
+			pf.positional = append(pf.positional, arg)
+		}
+		// clean ignores positionals
+	}
+
+	if passthroughStart >= 0 {
+		pf.passthrough = argv[passthroughStart:]
+	}
+	return pf, nil
+}
+
 // ParseArgs parses CLI arguments and returns a Config.
 func ParseArgs(argv []string) (*Config, error) {
 	subcommand, subArgv := detectSubcommand(argv)
 
-	// Pre-parse to resolve config_dir and workspace for YAML loading.
-	configDir, preWorkspace, err := preParse(subArgv)
+	pf, err := parseFlags(subArgv, subcommand)
 	if err != nil {
 		return nil, err
+	}
+
+	// Resolve the locator flags (CLI > env > default; no YAML) so we know where
+	// to load the YAML from and which workdir overlay applies.
+	var boot bootParams
+	if err := resolveInto(&boot, pf.bootVals); err != nil {
+		return nil, err
+	}
+
+	configDir, err := filepath.Abs(expandUser(boot.ConfigDir))
+	if err != nil {
+		return nil, err
+	}
+
+	var workspace *string
+	if !boot.NoWorkspace {
+		abs, err := filepath.Abs(boot.Workspace)
+		if err != nil {
+			return nil, err
+		}
+		workspace = &abs
 	}
 
 	// Load YAML configs.
@@ -74,8 +234,8 @@ func ParseArgs(argv []string) (*Config, error) {
 		return nil, fmt.Errorf("loading user config: %w", err)
 	}
 	workdirYAML := map[string]interface{}{}
-	if preWorkspace != nil {
-		workdirYAML, err = loadWorkdirYAMLConfig(configDir, *preWorkspace)
+	if workspace != nil {
+		workdirYAML, err = loadWorkdirYAMLConfig(configDir, *workspace)
 		if err != nil {
 			return nil, fmt.Errorf("loading workdir config: %w", err)
 		}
@@ -88,72 +248,12 @@ func ParseArgs(argv []string) (*Config, error) {
 
 	switch subcommand {
 	case "clean":
-		return parseCleanArgs(subArgv, configDir, preWorkspace, yamlLayers, cwd, home)
+		return buildCleanConfig(pf, configDir, workspace, yamlLayers, cwd, home)
 	case "config":
-		return parseConfigArgs(subArgv, configDir, preWorkspace, yamlLayers, cwd, home)
+		return buildConfigConfig(pf, configDir, workspace, yamlLayers, cwd, home)
 	default:
-		return parseRunArgs(subArgv, configDir, preWorkspace, yamlLayers, cwd, home)
+		return buildRunConfig(pf, configDir, workspace, yamlLayers, cwd, home)
 	}
-}
-
-func preParse(argv []string) (string, *string, error) {
-	// Simple scan for --config-dir, --workspace, --no-workspace
-	var configDirFlag, workspaceFlag string
-	noWorkspace := false
-
-	for i := 0; i < len(argv); i++ {
-		arg := argv[i]
-		switch {
-		case arg == "--config-dir" && i+1 < len(argv):
-			i++
-			configDirFlag = argv[i]
-		case strings.HasPrefix(arg, "--config-dir="):
-			configDirFlag = strings.TrimPrefix(arg, "--config-dir=")
-		case arg == "--workspace" && i+1 < len(argv):
-			i++
-			workspaceFlag = argv[i]
-		case strings.HasPrefix(arg, "--workspace="):
-			workspaceFlag = strings.TrimPrefix(arg, "--workspace=")
-		case arg == "--no-workspace":
-			noWorkspace = true
-		}
-	}
-
-	// Resolve config dir
-	if configDirFlag == "" {
-		configDirFlag = os.Getenv("CSB_CONFIG_DIR")
-	}
-	if configDirFlag == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", nil, err
-		}
-		configDirFlag = filepath.Join(home, ".config", "csb")
-	}
-	configDir, err := filepath.Abs(expandUser(configDirFlag))
-	if err != nil {
-		return "", nil, err
-	}
-
-	// Resolve workspace
-	var workspace *string
-	if noWorkspace {
-		workspace = nil
-	} else if workspaceFlag != "" {
-		abs, err := filepath.Abs(workspaceFlag)
-		if err != nil {
-			return "", nil, err
-		}
-		workspace = &abs
-	} else {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", nil, err
-		}
-		workspace = &cwd
-	}
-
-	return configDir, workspace, nil
 }
 
 func expandUser(path string) string {
@@ -250,87 +350,14 @@ func yamlStringList(m map[string]interface{}, key string) ([]string, bool) {
 	return nil, false
 }
 
-func parseRunArgs(argv []string, configDir string, preWorkspace *string, yamlLayers []map[string]interface{}, cwd, home string) (*Config, error) {
-	var workspaceFlag string
-	var noWorkspace, rebuild, verbose bool
-
-	parser := newOptParser()
-	passthroughStart := -1
-
-argLoop:
-	for i := 0; i < len(argv); i++ {
-		arg := argv[i]
-
-		if arg == "--" {
-			passthroughStart = i + 1
-			break
-		}
-
-		switch {
-		case arg == "--workspace":
-			if i+1 >= len(argv) {
-				return nil, fmt.Errorf("flag --workspace requires an argument")
-			}
-			i++
-			workspaceFlag = argv[i]
-		case strings.HasPrefix(arg, "--workspace="):
-			workspaceFlag = strings.TrimPrefix(arg, "--workspace=")
-		case arg == "--no-workspace":
-			noWorkspace = true
-		case arg == "--rebuild":
-			rebuild = true
-		case arg == "-v", arg == "--verbose":
-			verbose = true
-		case arg == "--config-dir":
-			if i+1 >= len(argv) {
-				return nil, fmt.Errorf("flag --config-dir requires an argument")
-			}
-			i++ // already resolved in preParse
-		case strings.HasPrefix(arg, "--config-dir="):
-			// already resolved in preParse
-		case arg == "--help-full":
-			fmt.Print(formatHelpFull())
-			os.Exit(0)
-		case arg == "-h", arg == "--help":
-			fmt.Print(formatHelp())
-			os.Exit(0)
-		default:
-			newI, handled, err := parser.handle(arg, argv, i)
-			if err != nil {
-				return nil, err
-			}
-			i = newI
-			if !handled {
-				if strings.HasPrefix(arg, "-") {
-					return nil, fmt.Errorf("unknown flag: %s", arg)
-				}
-				// First positional ends csb flag parsing; rest is the command.
-				passthroughStart = i
-				break argLoop
-			}
-		}
-	}
-
-	var passthrough []string
-	if passthroughStart >= 0 {
-		passthrough = argv[passthroughStart:]
-	}
-
-	var workspace *string
-	if noWorkspace {
-		workspace = nil
-	} else if workspaceFlag != "" {
-		abs, err := filepath.Abs(workspaceFlag)
-		if err != nil {
-			return nil, err
-		}
-		workspace = &abs
-	} else {
-		workspace = preWorkspace
-	}
-
-	resolved, err := resolveOptions(parser.values, yamlLayers...)
+func buildRunConfig(pf parsedFlags, configDir string, workspace *string, yamlLayers []map[string]interface{}, cwd, home string) (*Config, error) {
+	resolved, err := resolveOptions(pf.optVals, yamlLayers...)
 	if err != nil {
+		return nil, err
+	}
+
+	var rf runFlags
+	if err := resolveInto(&rf, pf.runVals); err != nil {
 		return nil, err
 	}
 
@@ -340,21 +367,15 @@ argLoop:
 		ConfigDir:       configDir,
 		Workspace:       workspace,
 		Subcommand:      "run",
-		Rebuild:         rebuild,
-		Verbose:         verbose,
-		PassthroughArgs: passthrough,
+		Rebuild:         rf.Rebuild,
+		Verbose:         pf.verbose,
+		PassthroughArgs: pf.passthrough,
 		Options:         resolved,
 	}, nil
 }
 
-func parseCleanArgs(argv []string, configDir string, preWorkspace *string, yamlLayers []map[string]interface{}, cwd, home string) (*Config, error) {
-	verbose := false
-	for _, arg := range argv {
-		if arg == "-v" || arg == "--verbose" {
-			verbose = true
-		}
-	}
-
+func buildCleanConfig(pf parsedFlags, configDir string, workspace *string, yamlLayers []map[string]interface{}, cwd, home string) (*Config, error) {
+	// clean ignores CLI Options flags; its Options come from yaml/env/default.
 	resolved, err := resolveOptions(nil, yamlLayers...)
 	if err != nil {
 		return nil, err
@@ -364,77 +385,35 @@ func parseCleanArgs(argv []string, configDir string, preWorkspace *string, yamlL
 		CWD:        cwd,
 		Home:       home,
 		ConfigDir:  configDir,
-		Workspace:  preWorkspace,
+		Workspace:  workspace,
 		Subcommand: "clean",
-		Verbose:    verbose,
+		Verbose:    pf.verbose,
 		Options:    resolved,
 	}, nil
 }
 
-func parseConfigArgs(argv []string, configDir string, preWorkspace *string, yamlLayers []map[string]interface{}, cwd, home string) (*Config, error) {
-	verbose := false
-	var workspaceFlag string
-	noWorkspace := false
-
-	var positional []string
-	parser := newOptParser()
-
-	for i := 0; i < len(argv); i++ {
-		arg := argv[i]
-		switch {
-		case arg == "-h", arg == "--help":
-			fmt.Print(formatConfigHelp())
-			os.Exit(0)
-		case arg == "-v", arg == "--verbose":
-			verbose = true
-		case arg == "--workspace" && i+1 < len(argv):
-			i++
-			workspaceFlag = argv[i]
-		case strings.HasPrefix(arg, "--workspace="):
-			workspaceFlag = strings.TrimPrefix(arg, "--workspace=")
-		case arg == "--no-workspace":
-			noWorkspace = true
-		case arg == "--config-dir" && i+1 < len(argv):
-			i++ // already resolved
-		case strings.HasPrefix(arg, "--config-dir="):
-			// already resolved
-		default:
-			newI, handled, err := parser.handle(arg, argv, i)
-			if err != nil {
-				return nil, err
-			}
-			i = newI
-			if !handled {
-				if strings.HasPrefix(arg, "-") {
-					// ignore unknown flags
-				} else {
-					positional = append(positional, arg)
-				}
-			}
-		}
-	}
-
-	if len(positional) == 0 {
+func buildConfigConfig(pf parsedFlags, configDir string, workspace *string, yamlLayers []map[string]interface{}, cwd, home string) (*Config, error) {
+	if len(pf.positional) == 0 {
 		fmt.Print(formatConfigHelp())
 		os.Exit(0)
 	}
 
-	action := positional[0]
-	positional = positional[1:]
+	action := pf.positional[0]
+	targets := pf.positional[1:]
 
 	editTarget := "user"
 	showTarget := "config"
 	switch action {
 	case "show":
-		if len(positional) > 0 {
-			showTarget = positional[0]
+		if len(targets) > 0 {
+			showTarget = targets[0]
 		}
 		if showTarget != "config" && showTarget != "context" {
 			return nil, fmt.Errorf("config show target must be 'config' or 'context', got %q", showTarget)
 		}
 	case "edit":
-		if len(positional) > 0 {
-			editTarget = positional[0]
+		if len(targets) > 0 {
+			editTarget = targets[0]
 		}
 		if editTarget != "user" && editTarget != "workdir" {
 			return nil, fmt.Errorf("config edit target must be 'user' or 'workdir', got %q", editTarget)
@@ -445,20 +424,7 @@ func parseConfigArgs(argv []string, configDir string, preWorkspace *string, yaml
 		return nil, fmt.Errorf("unknown config action %q; expected 'show', 'edit', 'status', or 'update'", action)
 	}
 
-	var workspace *string
-	if noWorkspace {
-		workspace = nil
-	} else if workspaceFlag != "" {
-		abs, err := filepath.Abs(workspaceFlag)
-		if err != nil {
-			return nil, err
-		}
-		workspace = &abs
-	} else {
-		workspace = preWorkspace
-	}
-
-	resolved, err := resolveOptions(parser.values, yamlLayers...)
+	resolved, err := resolveOptions(pf.optVals, yamlLayers...)
 	if err != nil {
 		return nil, err
 	}
@@ -472,13 +438,13 @@ func parseConfigArgs(argv []string, configDir string, preWorkspace *string, yaml
 		ConfigAction:     action,
 		ConfigEditTarget: editTarget,
 		ConfigShowTarget: showTarget,
-		Verbose:          verbose,
+		Verbose:          pf.verbose,
 		Options:          resolved,
 	}, nil
 }
 
 func formatConfigHelp() string {
-	return `Usage: csb config <action> [options]
+	header := `Usage: csb config <action> [options]
 
 Actions:
   show [config|context]   Print resolved config YAML, or list the docker
@@ -491,14 +457,13 @@ Actions:
                           binary's versions (edited files are backed up to .bak)
 
 Options:
-  --workspace PATH        workspace directory (default: CWD)
-  --no-workspace          no workspace
-  --config-dir PATH       csb config directory (default: ~/.config/csb)
 `
+	rows := renderRows(optionRows(reflect.TypeOf(bootParams{}), false))
+	return header + strings.Join(rows, "\n") + "\n"
 }
 
 func formatHelp() string {
-	fixed := `Usage: csb [flags] [subcommand] [-- args...]
+	header := `Usage: csb [flags] [subcommand] [-- args...]
 
 Subcommands:
   run               Run a command in an isolated container (default)
@@ -511,14 +476,15 @@ Subcommands:
   config update     Interactively update shipped resources (Dockerfile, addons)
 
 Flags:
-  --workspace PATH          host directory to mount as the workspace (default: CWD)
-  --no-workspace            ephemeral workspace, no host directory mounted
-  --rebuild                 force a full image rebuild
-  -v, --verbose             print the run command before executing
-  --config-dir PATH         host directory for csb config (default: ~/.config/csb)
 `
-	optLines := strings.Join(optionHelpLines(), "\n")
-	return fixed + optLines + "\n  --help-full               show all config options, env vars, and example YAML\n"
+	// Locator flags + run-control flags + the bespoke -v + Options flags +
+	// --help-config, rendered together so the column alignment is shared.
+	rows := optionRows(reflect.TypeOf(bootParams{}), false)
+	rows = append(rows, optionRows(reflect.TypeOf(runFlags{}), false)...)
+	rows = append(rows, helpRow{"-v, --verbose", "verbose logging"})
+	rows = append(rows, optionRows(reflect.TypeOf(Options{}), false)...)
+	rows = append(rows, helpRow{"--help-config", "show all config options, env vars, and example YAML"})
+	return header + strings.Join(renderRows(rows), "\n") + "\n"
 }
 
 func formatHelpFull() string {
@@ -528,6 +494,8 @@ func formatHelpFull() string {
 		"OPTIONS",
 		"",
 	}
+	lines = append(lines, optionFullLines(reflect.TypeOf(bootParams{}))...)
+	lines = append(lines, optionFullLines(reflect.TypeOf(runFlags{}))...)
 	lines = append(lines, optionHelpFullLines()...)
 	lines = append(lines, "EXAMPLE config.yaml", "")
 	for _, line := range strings.Split(renderConfigTemplate(), "\n") {

@@ -136,3 +136,146 @@ func TestParseArgs_WorkdirAdditiveAddonsExtendsUser(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"gui", "podman"}, cfg.Addons)
 }
+
+// ── input-validation error paths ─────────────────────────────────────────────
+
+// TestParseArgs_UnknownFlagRunErrors verifies an unrecognized flag is a hard
+// error for the run subcommand (config/clean ignore unknown flags instead).
+func TestParseArgs_UnknownFlagRunErrors(t *testing.T) {
+	t.Setenv("CSB_CONFIG_DIR", t.TempDir())
+
+	_, err := ParseArgs([]string{"--bogus", "--no-workspace"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown flag")
+}
+
+// TestParseArgs_ConfigInvalidShowTarget verifies an invalid `config show` target
+// is rejected.
+func TestParseArgs_ConfigInvalidShowTarget(t *testing.T) {
+	t.Setenv("CSB_CONFIG_DIR", t.TempDir())
+
+	_, err := ParseArgs([]string{"--no-workspace", "config", "show", "bogus"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config show target")
+}
+
+// TestParseArgs_ConfigInvalidEditTarget verifies an invalid `config edit` target
+// is rejected.
+func TestParseArgs_ConfigInvalidEditTarget(t *testing.T) {
+	t.Setenv("CSB_CONFIG_DIR", t.TempDir())
+
+	_, err := ParseArgs([]string{"--no-workspace", "config", "edit", "bogus"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config edit target")
+}
+
+// TestParseArgs_ConfigUnknownAction verifies an unknown config action is rejected.
+func TestParseArgs_ConfigUnknownAction(t *testing.T) {
+	t.Setenv("CSB_CONFIG_DIR", t.TempDir())
+
+	_, err := ParseArgs([]string{"--no-workspace", "config", "bogus"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown config action")
+}
+
+// TestParseArgs_ConfigStatusAndUpdate verifies the no-target actions parse and
+// set the action through.
+func TestParseArgs_ConfigStatusAndUpdate(t *testing.T) {
+	t.Setenv("CSB_CONFIG_DIR", t.TempDir())
+
+	for _, action := range []string{"status", "update"} {
+		cfg, err := ParseArgs([]string{"--no-workspace", "config", action})
+		require.NoError(t, err)
+		assert.Equal(t, "config", cfg.Subcommand)
+		assert.Equal(t, action, cfg.ConfigAction)
+	}
+}
+
+// ── locator (bootParams) resolution ──────────────────────────────────────────
+
+// TestParseArgs_WorkspaceFromEnv verifies CSB_WORKSPACE supplies the workspace
+// when no --workspace flag is given.
+func TestParseArgs_WorkspaceFromEnv(t *testing.T) {
+	t.Setenv("CSB_CONFIG_DIR", t.TempDir())
+	ws := t.TempDir()
+	t.Setenv("CSB_WORKSPACE", ws)
+
+	cfg, err := ParseArgs([]string{"config", "show"})
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Workspace)
+	assert.Equal(t, ws, *cfg.Workspace)
+}
+
+// TestParseArgs_CLIWorkspaceBeatsEnv verifies --workspace overrides CSB_WORKSPACE.
+func TestParseArgs_CLIWorkspaceBeatsEnv(t *testing.T) {
+	t.Setenv("CSB_CONFIG_DIR", t.TempDir())
+	t.Setenv("CSB_WORKSPACE", t.TempDir())
+	cliWs := t.TempDir()
+
+	cfg, err := ParseArgs([]string{"--workspace", cliWs, "config", "show"})
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Workspace)
+	assert.Equal(t, cliWs, *cfg.Workspace)
+}
+
+// TestParseArgs_RebuildFlag verifies --rebuild sets Config.Rebuild for run.
+func TestParseArgs_RebuildFlag(t *testing.T) {
+	t.Setenv("CSB_CONFIG_DIR", t.TempDir())
+
+	cfg, err := ParseArgs([]string{"--rebuild", "--no-workspace"})
+	require.NoError(t, err)
+	assert.True(t, cfg.Rebuild)
+	assert.Equal(t, "run", cfg.Subcommand)
+
+	cfg, err = ParseArgs([]string{"--no-workspace"})
+	require.NoError(t, err)
+	assert.False(t, cfg.Rebuild)
+}
+
+// TestParseArgs_RebuildIgnoredForConfig verifies --rebuild is ignored (not an
+// error) for the config subcommand, where it has no meaning.
+func TestParseArgs_RebuildIgnoredForConfig(t *testing.T) {
+	t.Setenv("CSB_CONFIG_DIR", t.TempDir())
+
+	cfg, err := ParseArgs([]string{"--rebuild", "--no-workspace", "config", "show"})
+	require.NoError(t, err)
+	assert.False(t, cfg.Rebuild)
+	assert.Equal(t, "config", cfg.Subcommand)
+}
+
+// TestParseArgs_RebuildIgnoredForClean verifies --rebuild is ignored (not an
+// error) for the clean subcommand.
+func TestParseArgs_RebuildIgnoredForClean(t *testing.T) {
+	t.Setenv("CSB_CONFIG_DIR", t.TempDir())
+
+	cfg, err := ParseArgs([]string{"--rebuild", "clean"})
+	require.NoError(t, err)
+	assert.False(t, cfg.Rebuild)
+	assert.Equal(t, "clean", cfg.Subcommand)
+}
+
+// TestParseArgs_NoWorkspaceYieldsNil verifies --no-workspace collapses the
+// tri-state to a nil workspace, and does not collide with the --no-X bool
+// negation path (which also runs for the neighbouring --no-motd flag).
+func TestParseArgs_NoWorkspaceYieldsNil(t *testing.T) {
+	t.Setenv("CSB_CONFIG_DIR", t.TempDir())
+
+	cfg, err := ParseArgs([]string{"--no-motd", "--no-workspace", "config", "show"})
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Workspace)
+	assert.False(t, cfg.Motd)
+}
+
+// TestParseArgs_LocatorFlagAfterBoundaryNotConsumed verifies a --workspace that
+// appears after the command boundary is passed through to the inner command,
+// not consumed by csb — consistent with every other flag.
+func TestParseArgs_LocatorFlagAfterBoundaryNotConsumed(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CSB_CONFIG_DIR", dir)
+
+	cfg, err := ParseArgs([]string{"--", "tool", "--workspace", "/elsewhere"})
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Workspace)
+	assert.NotEqual(t, "/elsewhere", *cfg.Workspace)
+	assert.Equal(t, []string{"tool", "--workspace", "/elsewhere"}, cfg.PassthroughArgs)
+}

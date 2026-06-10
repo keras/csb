@@ -164,7 +164,12 @@ type optParser struct {
 }
 
 func newOptParser() *optParser {
-	t := reflect.TypeOf(Options{})
+	return newOptParserFor(reflect.TypeOf(Options{}))
+}
+
+// newOptParserFor builds a parser for any struct that uses the flag: tag
+// machinery (Options or bootParams).
+func newOptParserFor(t reflect.Type) *optParser {
 	return &optParser{
 		t:       t,
 		flagIdx: buildFlagIndex(t),
@@ -294,15 +299,25 @@ func dedupFirst(s []string) []string {
 	return out
 }
 
-// resolveOptions resolves final option values from CLI, environment, YAML layers, and defaults.
+// resolveOptions resolves final Options values from CLI, environment, YAML
+// layers, and defaults. It is a thin wrapper over resolveInto.
+func resolveOptions(cliValues map[int]any, yamlLayers ...map[string]any) (Options, error) {
+	var opts Options
+	err := resolveInto(&opts, cliValues, yamlLayers...)
+	return opts, err
+}
+
+// resolveInto resolves the fields of the struct pointed to by dst from CLI,
+// environment, YAML layers, and defaults, using the struct-tag machinery.
 // Precedence for scalar (bool/string): CLI > env > yaml(high) > yaml(low) > default.
 // For slices, bottom-up fold with additive "+" prefix support.
 // yamlLayers are ordered low→high (e.g. user config first, workdir config second).
-// cliValues maps Options field index to CLI-supplied value(s); may be nil.
-func resolveOptions(cliValues map[int]any, yamlLayers ...map[string]any) (Options, error) {
-	var opts Options
-	t := reflect.TypeOf(opts)
-	v := reflect.ValueOf(&opts).Elem()
+// cliValues maps the struct's field index to CLI-supplied value(s); may be nil.
+// Fields with no yaml: tag simply skip the YAML layer, so the same function
+// serves both YAML-aware Options and the YAML-free bootstrap params.
+func resolveInto(dst any, cliValues map[int]any, yamlLayers ...map[string]any) error {
+	v := reflect.ValueOf(dst).Elem()
+	t := v.Type()
 
 	for i := range t.NumField() {
 		field := t.Field(i)
@@ -339,7 +354,7 @@ func resolveOptions(cliValues map[int]any, yamlLayers ...map[string]any) (Option
 				}
 				stripped, isAdditive, err := classifyEntries(yamlTag, specs)
 				if err != nil {
-					return opts, err
+					return err
 				}
 				if isAdditive {
 					acc = append(acc, stripped...)
@@ -359,7 +374,7 @@ func resolveOptions(cliValues map[int]any, yamlLayers ...map[string]any) (Option
 					}
 					stripped, isAdditive, err := classifyEntries(envTag, vals)
 					if err != nil {
-						return opts, err
+						return err
 					}
 					if isAdditive {
 						acc = append(acc, stripped...)
@@ -378,7 +393,7 @@ func resolveOptions(cliValues map[int]any, yamlLayers ...map[string]any) (Option
 				}
 				stripped, isAdditive, err := classifyEntries(cliName, vals)
 				if err != nil {
-					return opts, err
+					return err
 				}
 				if isAdditive {
 					acc = append(acc, stripped...)
@@ -394,7 +409,7 @@ func resolveOptions(cliValues map[int]any, yamlLayers ...map[string]any) (Option
 
 			// Apply parse: func and set field.
 			if err := setSliceField(fv, field, acc, parseTag); err != nil {
-				return opts, err
+				return err
 			}
 
 			// Ensure slice is never nil.
@@ -455,7 +470,7 @@ func resolveOptions(cliValues map[int]any, yamlLayers ...map[string]any) (Option
 			// 4. Default
 			if !set && defaultTag != "" {
 				if err := applyDefault(fv, field, defaultTag, parseTag); err != nil {
-					return opts, err
+					return err
 				}
 			}
 		}
@@ -463,12 +478,12 @@ func resolveOptions(cliValues map[int]any, yamlLayers ...map[string]any) (Option
 		// Validate
 		if validateTag != "" {
 			if err := validateFuncs[validateTag](fv.Interface()); err != nil {
-				return opts, err
+				return err
 			}
 		}
 	}
 
-	return opts, nil
+	return nil
 }
 
 func setSliceField(fv reflect.Value, field reflect.StructField, specs []string, parseTag string) error {
@@ -522,6 +537,11 @@ func formatFlagStr(f reflect.StructField, full bool) string {
 	}
 	switch f.Type.Kind() {
 	case reflect.Bool:
+		// A flag already phrased as a negation (e.g. no-workspace) is its own
+		// negation; don't advertise a confusing --no-no-X partner.
+		if strings.HasPrefix(flagTag, "no-") {
+			return "--" + flagTag
+		}
 		return fmt.Sprintf("--%s / --no-%s", flagTag, flagTag)
 	case reflect.Slice:
 		if full {
@@ -533,36 +553,45 @@ func formatFlagStr(f reflect.StructField, full bool) string {
 	}
 }
 
-// optionHelpLines returns flag lines for the short help, one per Options field that has a flag: tag.
-// Column width is computed dynamically so long bool-pair strings never truncate the help text.
-func optionHelpLines() []string {
-	t := reflect.TypeOf(Options{})
+// helpRow is one flag line (flag string + description) for the short help.
+type helpRow struct{ flag, help string }
 
-	width := 0
+// optionRows returns one helpRow per flag-bearing field of t.
+func optionRows(t reflect.Type, full bool) []helpRow {
+	var rows []helpRow
 	for i := range t.NumField() {
 		f := t.Field(i)
 		if f.Tag.Get("flag") == "" {
 			continue
 		}
-		if w := len(formatFlagStr(f, false)); w > width {
-			width = w
+		rows = append(rows, helpRow{formatFlagStr(f, full), f.Tag.Get("help")})
+	}
+	return rows
+}
+
+// renderRows formats helpRows into aligned "  --flag  help" lines. Column width
+// is computed dynamically so long bool-pair strings never truncate the text.
+func renderRows(rows []helpRow) []string {
+	width := 0
+	for _, r := range rows {
+		if len(r.flag) > width {
+			width = len(r.flag)
 		}
 	}
-
-	var lines []string
-	for i := range t.NumField() {
-		f := t.Field(i)
-		if f.Tag.Get("flag") == "" {
-			continue
-		}
-		lines = append(lines, fmt.Sprintf("  %-*s  %s", width, formatFlagStr(f, false), f.Tag.Get("help")))
+	lines := make([]string, 0, len(rows))
+	for _, r := range rows {
+		lines = append(lines, fmt.Sprintf("  %-*s  %s", width, r.flag, r.help))
 	}
 	return lines
 }
 
-// optionHelpFullLines returns the expanded option table for --help-full.
+// optionHelpFullLines returns the expanded Options table for --help-config.
 func optionHelpFullLines() []string {
-	t := reflect.TypeOf(Options{})
+	return optionFullLines(reflect.TypeOf(Options{}))
+}
+
+// optionFullLines returns the expanded flag table for any flag-bearing struct.
+func optionFullLines(t reflect.Type) []string {
 	var lines []string
 	for i := range t.NumField() {
 		f := t.Field(i)
