@@ -43,8 +43,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	assets := csb.Assets{
+		Entrypoint: entrypointSH,
+		Persist:    csbPersistSH,
+		Help:       csbHelpSH,
+		HostRun:    hostRunTarXZ,
+		AddonsFS:   addonsFS,
+	}
+
 	csb.InitLogger(cfg.Verbose)
-	csb.InitConfigDir(cfg.ConfigDir, addonsFS)
+	csb.InitConfigDir(cfg.ConfigDir, assets.AddonsFS)
 
 	rt := csb.NewRuntime(cfg.ContainerCLI())
 
@@ -58,20 +66,20 @@ func main() {
 		var err error
 		switch cfg.ConfigAction {
 		case "show":
-			err = csb.RunConfigShow(cfg, entrypointSH, csbPersistSH, hostRunTarXZ, csbHelpSH)
+			err = csb.RunConfigShow(cfg, assets)
 		case "edit":
 			err = csb.RunConfigEdit(cfg)
 		case "status":
-			err = csb.RunConfigStatus(cfg, addonsFS)
+			err = csb.RunConfigStatus(cfg, assets)
 		case "update":
-			err = csb.RunConfigUpdate(cfg, addonsFS)
+			err = csb.RunConfigUpdate(cfg, assets)
 		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "csb: error: %v\n", err)
 			os.Exit(1)
 		}
 	default: // "run"
-		if err := csb.RunRun(cfg, rt, addonsFS, entrypointSH, csbPersistSH, hostRunTarXZ, csbHelpSH); err != nil {
+		if err := csb.RunRun(cfg, rt, assets); err != nil {
 			fmt.Fprintf(os.Stderr, "csb: error: %v\n", err)
 			os.Exit(1)
 		}

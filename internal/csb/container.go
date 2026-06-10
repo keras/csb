@@ -213,39 +213,86 @@ func dockerfilePath(cfg *Config) string {
 	return filepath.Join(cfg.ConfigDir, "Dockerfile")
 }
 
-// ImageName returns the image name to use for the given config.
-func ImageName(cfg *Config, entrypointContent, persistContent string, hostRunTarXZ []byte, helpContent string) string {
-	dockerfileBytes, _ := os.ReadFile(dockerfilePath(cfg))
+// contextFile is one entry to be written into the docker build context tar.
+type contextFile struct {
+	name string
+	mode int64
+	data []byte
+}
+
+// buildInputs is the fully-resolved set of files that define an image: what
+// gets hashed into the image name AND what gets written to the build context.
+type buildInputs struct {
+	dockerfile []byte
+	entrypoint []byte
+	persist    []byte
+	help       []byte
+	addons     []resolvedAddon
+	runScript  []byte
+	hostRun    []byte
+}
+
+// resolvedAddon pairs an addon instance with the bytes of its install script,
+// keeping the two together so hash() and tar() can't fall out of alignment.
+type resolvedAddon struct {
+	instance addonInstance
+	data     []byte
+}
+
+// resolveBuildInputs reads the Dockerfile, addon scripts, and host-run binary
+// for cfg, returning the resolved set of build inputs shared by hash() and tar().
+func resolveBuildInputs(cfg *Config, assets Assets) (buildInputs, error) {
+	dockerfileBytes, err := os.ReadFile(dockerfilePath(cfg))
+	if err != nil {
+		return buildInputs{}, fmt.Errorf("reading Dockerfile: %w", err)
+	}
 
 	instances := addonInstances(cfg)
-	hasher := sha256.New()
-	hasher.Write(dockerfileBytes)
-	hasher.Write([]byte(entrypointContent))
-	hasher.Write([]byte(persistContent))
-	hasher.Write([]byte(helpContent))
-	for _, a := range instances {
-		if data, err := os.ReadFile(a.Path); err == nil {
-			hasher.Write(data)
+	addons := make([]resolvedAddon, len(instances))
+	for i, a := range instances {
+		data, err := os.ReadFile(a.Path)
+		if err != nil {
+			return buildInputs{}, fmt.Errorf("reading addon %s: %w", a.Path, err)
 		}
+		addons[i] = resolvedAddon{instance: a, data: data}
 	}
-	hasher.Write(buildRunScript(instances))
-	if data, err := hostRunBytes(hostRunTarXZ, cfg.Arch); err == nil {
-		hasher.Write(data)
+
+	hostRunData, err := hostRunBytes(assets.HostRun, cfg.Arch)
+	if err != nil {
+		return buildInputs{}, fmt.Errorf("decompressing csb-host-run: %w", err)
 	}
+
+	return buildInputs{
+		dockerfile: dockerfileBytes,
+		entrypoint: assets.Entrypoint,
+		persist:    assets.Persist,
+		help:       assets.Help,
+		addons:     addons,
+		runScript:  buildRunScript(instances),
+		hostRun:    hostRunData,
+	}, nil
+}
+
+// hash produces the "csb:<12hex>" image name. The hash order MUST match the
+// legacy ImageName implementation: dockerfile, entrypoint, persist, help,
+// each addon script's bytes (in addonInstances order), the run script, then
+// the host-run binary bytes.
+func (b buildInputs) hash() string {
+	hasher := sha256.New()
+	hasher.Write(b.dockerfile)
+	hasher.Write(b.entrypoint)
+	hasher.Write(b.persist)
+	hasher.Write(b.help)
+	for _, a := range b.addons {
+		hasher.Write(a.data)
+	}
+	hasher.Write(b.runScript)
+	hasher.Write(b.hostRun)
 	return fmt.Sprintf("csb:%x", hasher.Sum(nil))[:4+12] // "csb:" + 12 hex chars
 }
 
-// BuildContextTar creates an in-memory tar archive for docker build.
-func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarXZ, helpContent []byte) ([]byte, error) {
-	hostRunData, err := hostRunBytes(hostRunTarXZ, cfg.Arch)
-	if err != nil {
-		return nil, fmt.Errorf("decompressing csb-host-run: %w", err)
-	}
-	dockerfileBytes, err := os.ReadFile(dockerfilePath(cfg))
-	if err != nil {
-		return nil, fmt.Errorf("reading Dockerfile: %w", err)
-	}
-
+// tar creates an in-memory tar archive for docker build.
+func (b buildInputs) tar() ([]byte, error) {
 	buf := &bytes.Buffer{}
 	tw := tar.NewWriter(buf)
 
@@ -262,16 +309,11 @@ func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarX
 		return err
 	}
 
-	type contextFile struct {
-		name string
-		mode int64
-		data []byte
-	}
 	for _, f := range []contextFile{
-		{"Dockerfile", 0644, dockerfileBytes},
-		{"entrypoint.sh", 0644, entrypointContent},
-		{"csb/csb-persist", 0755, persistContent},
-		{"csb/csb-help", 0755, helpContent},
+		{"Dockerfile", 0644, b.dockerfile},
+		{"entrypoint.sh", 0644, b.entrypoint},
+		{"csb/csb-persist", 0755, b.persist},
+		{"csb/csb-help", 0755, b.help},
 	} {
 		if err := addFile(f.name, f.data, f.mode); err != nil {
 			return nil, err
@@ -289,25 +331,20 @@ func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarX
 	}
 
 	// Addon scripts + the run.sh that drives them.
-	instances := addonInstances(cfg)
-	for _, a := range instances {
-		data, err := os.ReadFile(a.Path)
-		if err != nil {
-			return nil, fmt.Errorf("reading addon %s: %w", a.Path, err)
-		}
-		name := "csb/build.d/" + a.Name + ".sh"
-		if err := addFile(name, data, 0755); err != nil {
+	for _, a := range b.addons {
+		name := "csb/build.d/" + a.instance.Name + ".sh"
+		if err := addFile(name, a.data, 0755); err != nil {
 			return nil, err
 		}
 	}
-	if err := addFile("csb/build.d/run.sh", buildRunScript(instances), 0755); err != nil {
+	if err := addFile("csb/build.d/run.sh", b.runScript, 0755); err != nil {
 		return nil, err
 	}
 
 	// csb-host-run binary (embedded, already decompressed above). Always
 	// written — possibly empty in tests — so the Dockerfile's unconditional
 	// COPY succeeds without templating.
-	if err := addFile("csb/csb-host-run", hostRunData, 0755); err != nil {
+	if err := addFile("csb/csb-host-run", b.hostRun, 0755); err != nil {
 		return nil, err
 	}
 
@@ -315,6 +352,24 @@ func BuildContextTar(cfg *Config, entrypointContent, persistContent, hostRunTarX
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// ImageName returns the image name to use for the given config.
+func ImageName(cfg *Config, assets Assets) (string, error) {
+	inputs, err := resolveBuildInputs(cfg, assets)
+	if err != nil {
+		return "", err
+	}
+	return inputs.hash(), nil
+}
+
+// BuildContextTar creates an in-memory tar archive for docker build.
+func BuildContextTar(cfg *Config, assets Assets) ([]byte, error) {
+	inputs, err := resolveBuildInputs(cfg, assets)
+	if err != nil {
+		return nil, err
+	}
+	return inputs.tar()
 }
 
 // ResolveMounts builds the list of bind mounts for the container.

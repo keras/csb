@@ -244,45 +244,56 @@ func setupImageCfg(t *testing.T) *Config {
 
 func TestImageName_Format(t *testing.T) {
 	cfg := setupImageCfg(t)
-	name := ImageName(cfg, "ep", "persist", nil, "")
+	name, err := ImageName(cfg, Assets{Entrypoint: []byte("ep"), Persist: []byte("persist")})
+	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(name, "csb:"), "got %q", name)
 	assert.Len(t, name, 4+12) // "csb:" + 12 hex chars
 }
 
 func TestImageName_Deterministic(t *testing.T) {
 	cfg := setupImageCfg(t)
-	a := ImageName(cfg, "ep", "persist", nil, "")
-	b := ImageName(cfg, "ep", "persist", nil, "")
+	a, err := ImageName(cfg, Assets{Entrypoint: []byte("ep"), Persist: []byte("persist")})
+	require.NoError(t, err)
+	b, err := ImageName(cfg, Assets{Entrypoint: []byte("ep"), Persist: []byte("persist")})
+	require.NoError(t, err)
 	assert.Equal(t, a, b)
 }
 
 func TestImageName_ChangesOnDockerfile(t *testing.T) {
 	cfg := setupImageCfg(t)
-	a := ImageName(cfg, "ep", "persist", nil, "")
+	a, err := ImageName(cfg, Assets{Entrypoint: []byte("ep"), Persist: []byte("persist")})
+	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(cfg.ConfigDir, "Dockerfile"), []byte("FROM ubuntu:22.04\n"), 0644))
-	b := ImageName(cfg, "ep", "persist", nil, "")
+	b, err := ImageName(cfg, Assets{Entrypoint: []byte("ep"), Persist: []byte("persist")})
+	require.NoError(t, err)
 	assert.NotEqual(t, a, b)
 }
 
 func TestImageName_ChangesOnEntrypoint(t *testing.T) {
 	cfg := setupImageCfg(t)
-	a := ImageName(cfg, "ep-v1", "persist", nil, "")
-	b := ImageName(cfg, "ep-v2", "persist", nil, "")
+	a, err := ImageName(cfg, Assets{Entrypoint: []byte("ep-v1"), Persist: []byte("persist")})
+	require.NoError(t, err)
+	b, err := ImageName(cfg, Assets{Entrypoint: []byte("ep-v2"), Persist: []byte("persist")})
+	require.NoError(t, err)
 	assert.NotEqual(t, a, b)
 }
 
 func TestImageName_ChangesOnPersist(t *testing.T) {
 	cfg := setupImageCfg(t)
-	a := ImageName(cfg, "ep", "p1", nil, "")
-	b := ImageName(cfg, "ep", "p2", nil, "")
+	a, err := ImageName(cfg, Assets{Entrypoint: []byte("ep"), Persist: []byte("p1")})
+	require.NoError(t, err)
+	b, err := ImageName(cfg, Assets{Entrypoint: []byte("ep"), Persist: []byte("p2")})
+	require.NoError(t, err)
 	assert.NotEqual(t, a, b)
 }
 
 func TestImageName_ChangesOnArch(t *testing.T) {
 	cfg := setupImageCfg(t)
-	a := ImageName(cfg, "ep", "persist", nil, "")
+	a, err := ImageName(cfg, Assets{Entrypoint: []byte("ep"), Persist: []byte("persist")})
+	require.NoError(t, err)
 	cfg.Arch = "arm64"
-	b := ImageName(cfg, "ep", "persist", nil, "")
+	b, err := ImageName(cfg, Assets{Entrypoint: []byte("ep"), Persist: []byte("persist")})
+	require.NoError(t, err)
 	// arch only affects ImageName via hostRunBytes; with nil tarXZ both produce nil, so arch alone doesn't change hash
 	// but arch is not hashed directly; no change expected with nil tarXZ
 	_ = a
@@ -298,18 +309,22 @@ func TestImageName_ChangesOnAddonScript(t *testing.T) {
 	cfg.Arch = "amd64"
 	cfg.Addons = []string{"myaddon"}
 
-	a := ImageName(cfg, "ep", "persist", nil, "")
+	a, err := ImageName(cfg, Assets{Entrypoint: []byte("ep"), Persist: []byte("persist")})
+	require.NoError(t, err)
 
 	// Modify addon script
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "addons", "myaddon", "install.sh"), []byte("#!/bin/bash\necho changed\n"), 0755))
-	b := ImageName(cfg, "ep", "persist", nil, "")
+	b, err := ImageName(cfg, Assets{Entrypoint: []byte("ep"), Persist: []byte("persist")})
+	require.NoError(t, err)
 	assert.NotEqual(t, a, b)
 }
 
 func TestImageName_ChangesOnHelp(t *testing.T) {
 	cfg := setupImageCfg(t)
-	a := ImageName(cfg, "ep", "persist", nil, "help-v1")
-	b := ImageName(cfg, "ep", "persist", nil, "help-v2")
+	a, err := ImageName(cfg, Assets{Entrypoint: []byte("ep"), Persist: []byte("persist"), Help: []byte("help-v1")})
+	require.NoError(t, err)
+	b, err := ImageName(cfg, Assets{Entrypoint: []byte("ep"), Persist: []byte("persist"), Help: []byte("help-v2")})
+	require.NoError(t, err)
 	assert.NotEqual(t, a, b)
 }
 
@@ -324,7 +339,7 @@ func TestBuildContextTar_ContainsExpectedEntries(t *testing.T) {
 	cfg.Arch = "amd64"
 	cfg.Addons = []string{"myaddon"}
 
-	tarBytes, err := BuildContextTar(cfg, []byte("entrypoint"), []byte("persist"), nil, []byte("help"))
+	tarBytes, err := BuildContextTar(cfg, Assets{Entrypoint: []byte("entrypoint"), Persist: []byte("persist"), Help: []byte("help")})
 	require.NoError(t, err)
 
 	entries := tarEntries(t, tarBytes)
@@ -345,7 +360,7 @@ func TestBuildContextTar_FileModes(t *testing.T) {
 	cfg.Arch = "amd64"
 	cfg.Addons = nil
 
-	tarBytes, err := BuildContextTar(cfg, []byte("entrypoint"), []byte("persist"), nil, []byte("help"))
+	tarBytes, err := BuildContextTar(cfg, Assets{Entrypoint: []byte("entrypoint"), Persist: []byte("persist"), Help: []byte("help")})
 	require.NoError(t, err)
 
 	modes := tarModes(t, tarBytes)

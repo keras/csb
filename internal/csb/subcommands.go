@@ -175,9 +175,9 @@ func padRight(s string, width int) string {
 // RunConfigShow prints the fully resolved configuration as YAML, or — when
 // invoked as `csb config show context` — a listing of the docker build
 // context that would be sent for an image build.
-func RunConfigShow(cfg *Config, entrypointContent, persistContent, hostRunTarXZ, helpContent []byte) error {
+func RunConfigShow(cfg *Config, assets Assets) error {
 	if cfg.ConfigShowTarget == "context" {
-		return runConfigShowContext(cfg, entrypointContent, persistContent, hostRunTarXZ, helpContent)
+		return runConfigShowContext(cfg, assets)
 	}
 	out, err := yaml.Marshal(cfg.Options)
 	if err != nil {
@@ -199,8 +199,8 @@ func RunConfigShow(cfg *Config, entrypointContent, persistContent, hostRunTarXZ,
 // when piped or redirected it streams the raw tar so it can be saved
 // (`csb config show context > ctx.tar`) or piped (`| tar tvf -`,
 // `| docker build -`).
-func runConfigShowContext(cfg *Config, entrypointContent, persistContent, hostRunTarXZ, helpContent []byte) error {
-	contextTar, err := BuildContextTar(cfg, entrypointContent, persistContent, hostRunTarXZ, helpContent)
+func runConfigShowContext(cfg *Config, assets Assets) error {
+	contextTar, err := BuildContextTar(cfg, assets)
 	if err != nil {
 		return fmt.Errorf("building context: %w", err)
 	}
@@ -276,12 +276,12 @@ func RunConfigEdit(cfg *Config) error {
 }
 
 // RunRun executes the main run subcommand.
-func RunRun(cfg *Config, rt *Runtime, addonsFS fs.FS, entrypointContent, persistContent, hostRunTarXZ, helpContent []byte) error {
+func RunRun(cfg *Config, rt *Runtime, assets Assets) error {
 	// Config summary
 	logInfo("config dir", "path", cfg.ConfigDir, "runtime", cfg.ContainerCLI())
 
 	// Verbose nudge when shipped resources have drifted from this binary.
-	if embedded, err := managedEmbeddedFiles(addonsFS); err == nil {
+	if embedded, err := managedEmbeddedFiles(assets.AddonsFS); err == nil {
 		if n := pendingUpdateCount(cfg.ConfigDir, embedded); n > 0 {
 			logInfo("shipped resources", "differ", n, "hint", "csb config status")
 		}
@@ -315,7 +315,10 @@ func RunRun(cfg *Config, rt *Runtime, addonsFS fs.FS, entrypointContent, persist
 	}
 	logInfo("addons", "enabled", addonNames(cfg))
 
-	imgName := ImageName(cfg, string(entrypointContent), string(persistContent), hostRunTarXZ, string(helpContent))
+	imgName, err := ImageName(cfg, assets)
+	if err != nil {
+		return fmt.Errorf("computing image name: %w", err)
+	}
 
 	if cfg.Rebuild || !rt.ImageExists(imgName) {
 		reason := "not found locally"
@@ -324,7 +327,7 @@ func RunRun(cfg *Config, rt *Runtime, addonsFS fs.FS, entrypointContent, persist
 		}
 		fmt.Fprintf(os.Stderr, "Building %s...\n", imgName)
 		logInfo("building image", "image", imgName, "reason", reason)
-		contextTar, err := BuildContextTar(cfg, entrypointContent, persistContent, hostRunTarXZ, helpContent)
+		contextTar, err := BuildContextTar(cfg, assets)
 		if err != nil {
 			return fmt.Errorf("building context: %w", err)
 		}

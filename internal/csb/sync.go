@@ -167,8 +167,8 @@ func applySyncEntry(configDir, relPath string, content []byte) error {
 }
 
 // RunConfigStatus prints a table of managed resources and their drift state.
-func RunConfigStatus(cfg *Config, addonsFS fs.FS) error {
-	embedded, err := managedEmbeddedFiles(addonsFS)
+func RunConfigStatus(cfg *Config, assets Assets) error {
+	embedded, err := managedEmbeddedFiles(assets.AddonsFS)
 	if err != nil {
 		return fmt.Errorf("enumerating shipped resources: %w", err)
 	}
@@ -203,8 +203,8 @@ func RunConfigStatus(cfg *Config, addonsFS fs.FS) error {
 // version shipped in the current binary, mirroring `csb clean`. Missing files are
 // pre-checked; differing files start unchecked and are flagged, since updating
 // them replaces a local copy (backed up to <file>.bak).
-func RunConfigUpdate(cfg *Config, addonsFS fs.FS) error {
-	embedded, err := managedEmbeddedFiles(addonsFS)
+func RunConfigUpdate(cfg *Config, assets Assets) error {
+	embedded, err := managedEmbeddedFiles(assets.AddonsFS)
 	if err != nil {
 		return fmt.Errorf("enumerating shipped resources: %w", err)
 	}
