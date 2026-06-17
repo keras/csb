@@ -161,7 +161,7 @@ func TestAddonPaths_ReturnsPaths(t *testing.T) {
 func TestBuildRunScript_EmptyAddons(t *testing.T) {
 	script := string(buildRunScript(nil))
 	assert.Contains(t, script, "apt-get update")
-	assert.Contains(t, script, "rm -rf /tmp/build.d /var/lib/apt/lists/*")
+	assert.Contains(t, script, "rm -rf /tmp/addon.d /var/lib/apt/lists/*")
 }
 
 func TestBuildRunScript_WithAddons(t *testing.T) {
@@ -171,9 +171,11 @@ func TestBuildRunScript_WithAddons(t *testing.T) {
 	}
 	script := string(buildRunScript(instances))
 	assert.Contains(t, script, "apt-get update")
-	assert.Contains(t, script, "/tmp/build.d/foo.sh\n")
-	assert.Contains(t, script, "/tmp/build.d/bar.sh arg1\n")
-	assert.Contains(t, script, "rm -rf /tmp/build.d")
+	assert.Contains(t, script, "./install.sh")
+	assert.Contains(t, script, "run_addon foo\n")
+	assert.Contains(t, script, "run_addon bar arg1\n")
+	assert.Contains(t, script, "addon '$name' failed during install")
+	assert.Contains(t, script, "rm -rf /tmp/addon.d")
 }
 
 // ── hostRunBytes + decompressXZ ──────────────────────────────────────────────
@@ -348,8 +350,31 @@ func TestBuildContextTar_ContainsExpectedEntries(t *testing.T) {
 	assert.Contains(t, entries, "csb/csb-persist")
 	assert.Contains(t, entries, "csb/csb-help")
 	assert.Contains(t, entries, "csb/csb-host-run")
-	assert.Contains(t, entries, "csb/build.d/run.sh")
-	assert.Contains(t, entries, "csb/build.d/myaddon.sh")
+	assert.Contains(t, entries, "csb/addon.d/run.sh")
+	assert.Contains(t, entries, "csb/addon.d/myaddon/install.sh")
+}
+
+func TestBuildContextTar_BundlesAddonResources(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM debian:stable-slim\n"), 0644))
+	makeAddonDir(t, dir, "myaddon")
+	// A bundled resource sitting next to install.sh, plus a test.sh that must
+	// NOT be shipped into the image build context.
+	addonDir := filepath.Join(dir, "addons", "myaddon")
+	require.NoError(t, os.WriteFile(filepath.Join(addonDir, "config.conf"), []byte("key=value\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(addonDir, "test.sh"), []byte("#!/bin/bash\n"), 0755))
+
+	cfg := &Config{ConfigDir: dir}
+	cfg.Arch = "amd64"
+	cfg.Addons = []string{"myaddon"}
+
+	tarBytes, err := BuildContextTar(cfg, Assets{Entrypoint: []byte("entrypoint"), Persist: []byte("persist"), Help: []byte("help")})
+	require.NoError(t, err)
+
+	entries := tarEntries(t, tarBytes)
+	assert.Contains(t, entries, "csb/addon.d/myaddon/install.sh")
+	assert.Contains(t, entries, "csb/addon.d/myaddon/config.conf")
+	assert.NotContains(t, entries, "csb/addon.d/myaddon/test.sh")
 }
 
 func TestBuildContextTar_FileModes(t *testing.T) {
@@ -368,7 +393,7 @@ func TestBuildContextTar_FileModes(t *testing.T) {
 	assert.Equal(t, int64(0644), modes["entrypoint.sh"])
 	assert.Equal(t, int64(0755), modes["csb/csb-persist"])
 	assert.Equal(t, int64(0755), modes["csb/csb-help"])
-	assert.Equal(t, int64(0755), modes["csb/build.d/run.sh"])
+	assert.Equal(t, int64(0755), modes["csb/addon.d/run.sh"])
 }
 
 // tarEntries returns all entry names in a tar archive.

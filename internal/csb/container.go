@@ -58,8 +58,8 @@ RUN printf '\n[ -f /usr/share/bash-completion/bash_completion ] && . /usr/share/
 
 RUN mkdir -p /etc/csb/entrypoint.d /etc/csb/help.d
 
-COPY csb/build.d /tmp/build.d
-RUN /tmp/build.d/run.sh
+COPY csb/addon.d /tmp/addon.d
+RUN /tmp/addon.d/run.sh
 
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 CSB_HOME=/home/sandbox
 
@@ -154,25 +154,36 @@ func parseAddonSpec(spec string) (name string, args []string) {
 }
 
 // buildRunScript returns the bash script copied into the image as
-// /tmp/build.d/run.sh. It drives addon installation in a single RUN layer
-// so the Dockerfile itself stays free of inline shell loops.
+// /tmp/addon.d/run.sh. It drives addon installation in a single RUN layer
+// so the Dockerfile itself stays free of inline shell loops. Each addon lives
+// in its own /tmp/addon.d/<name>/ directory (install.sh plus any bundled
+// resources); install.sh is executed directly (honouring its own shebang and
+// the exec bit carried through from the source file) with that directory as its
+// working dir, so it can reference sibling files by relative path. The
+// run_addon wrapper turns any failure into a message naming the offending addon
+// instead of an opaque "run.sh failed".
 func buildRunScript(instances []addonInstance) []byte {
 	var b strings.Builder
-	b.WriteString("#!/usr/bin/env bash\nset -euo pipefail\napt-get update\n")
+	b.WriteString("#!/usr/bin/env bash\nset -euo pipefail\napt-get update\n\n")
+	b.WriteString("run_addon() {\n")
+	b.WriteString("\tlocal name=$1 rc=0\n")
+	b.WriteString("\tshift\n")
+	b.WriteString("\t( cd \"/tmp/addon.d/$name\" && ./install.sh \"$@\" ) || rc=$?\n")
+	b.WriteString("\tif [ \"$rc\" -ne 0 ]; then\n")
+	b.WriteString("\t\techo \"csb: addon '$name' failed during install (exit code $rc)\" >&2\n")
+	b.WriteString("\t\texit \"$rc\"\n")
+	b.WriteString("\tfi\n")
+	b.WriteString("}\n\n")
 	for _, a := range instances {
-		fmt.Fprintf(&b, "/tmp/build.d/%s.sh", a.Name)
-		if len(a.Args) > 0 {
-			b.WriteString(" ")
-			b.WriteString(shJoin(a.Args))
-		}
-		b.WriteString("\n")
+		argv := append([]string{a.Name}, a.Args...)
+		fmt.Fprintf(&b, "run_addon %s\n", shJoin(argv))
 	}
 	// Record the enabled addon names for csb-help's orientation box.
 	b.WriteString(": > /etc/csb/addons\n")
 	for _, a := range instances {
 		fmt.Fprintf(&b, "echo %s >> /etc/csb/addons\n", shJoin([]string{a.Name}))
 	}
-	b.WriteString("rm -rf /tmp/build.d /var/lib/apt/lists/*\n")
+	b.WriteString("rm -rf /tmp/addon.d /var/lib/apt/lists/*\n")
 	return []byte(b.String())
 }
 
@@ -232,11 +243,61 @@ type buildInputs struct {
 	hostRun    []byte
 }
 
-// resolvedAddon pairs an addon instance with the bytes of its install script,
-// keeping the two together so hash() and tar() can't fall out of alignment.
+// resolvedAddon pairs an addon instance with the contents of its directory —
+// install.sh plus any bundled resource files — keeping them together so hash()
+// and tar() can't fall out of alignment.
 type resolvedAddon struct {
 	instance addonInstance
-	data     []byte
+	files    []addonFile
+}
+
+// addonFile is one file bundled with an addon, named relative to the addon's
+// directory (e.g. "install.sh" or "config/foo.conf").
+type addonFile struct {
+	rel  string
+	mode int64
+	data []byte
+}
+
+// readAddonFiles walks an addon's directory and returns every file except the
+// test harness (test.sh), sorted by relative path for deterministic hashing and
+// tarring. Executable files keep mode 0755; everything else gets 0644.
+func readAddonFiles(dir string) ([]addonFile, error) {
+	var files []addonFile
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "test.sh" {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		mode := int64(0644)
+		if info.Mode()&0111 != 0 {
+			mode = 0755
+		}
+		files = append(files, addonFile{rel: filepath.ToSlash(rel), mode: mode, data: data})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].rel < files[j].rel })
+	return files, nil
 }
 
 // resolveBuildInputs reads the Dockerfile, addon scripts, and host-run binary
@@ -250,11 +311,11 @@ func resolveBuildInputs(cfg *Config, assets Assets) (buildInputs, error) {
 	instances := addonInstances(cfg)
 	addons := make([]resolvedAddon, len(instances))
 	for i, a := range instances {
-		data, err := os.ReadFile(a.Path)
+		files, err := readAddonFiles(filepath.Dir(a.Path))
 		if err != nil {
-			return buildInputs{}, fmt.Errorf("reading addon %s: %w", a.Path, err)
+			return buildInputs{}, fmt.Errorf("reading addon %s: %w", a.Name, err)
 		}
-		addons[i] = resolvedAddon{instance: a, data: data}
+		addons[i] = resolvedAddon{instance: a, files: files}
 	}
 
 	hostRunData, err := hostRunBytes(assets.HostRun, cfg.Arch)
@@ -273,10 +334,11 @@ func resolveBuildInputs(cfg *Config, assets Assets) (buildInputs, error) {
 	}, nil
 }
 
-// hash produces the "csb:<12hex>" image name. The hash order MUST match the
-// legacy ImageName implementation: dockerfile, entrypoint, persist, help,
-// each addon script's bytes (in addonInstances order), the run script, then
-// the host-run binary bytes.
+// hash produces the "csb:<12hex>" image name from: dockerfile, entrypoint,
+// persist, help, each addon's bundled files (relative path + bytes, in
+// addonInstances order then sorted-rel order), the run script, then the
+// host-run binary bytes. Including the relative path means renaming a bundled
+// resource changes the image even if its contents don't.
 func (b buildInputs) hash() string {
 	hasher := sha256.New()
 	hasher.Write(b.dockerfile)
@@ -284,7 +346,10 @@ func (b buildInputs) hash() string {
 	hasher.Write(b.persist)
 	hasher.Write(b.help)
 	for _, a := range b.addons {
-		hasher.Write(a.data)
+		for _, f := range a.files {
+			hasher.Write([]byte(f.rel))
+			hasher.Write(f.data)
+		}
 	}
 	hasher.Write(b.runScript)
 	hasher.Write(b.hostRun)
@@ -320,24 +385,27 @@ func (b buildInputs) tar() ([]byte, error) {
 		}
 	}
 
-	// csb/build.d/ directory
-	dirHdr := &tar.Header{
-		Name:     "csb/build.d/",
-		Typeflag: tar.TypeDir,
-		Mode:     0755,
-	}
-	if err := tw.WriteHeader(dirHdr); err != nil {
-		return nil, err
+	addDir := func(name string) error {
+		return tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeDir, Mode: 0755})
 	}
 
-	// Addon scripts + the run.sh that drives them.
+	// csb/addon.d/<name>/ directories, each carrying install.sh plus any
+	// bundled resources, alongside the run.sh that drives them.
+	if err := addDir("csb/addon.d/"); err != nil {
+		return nil, err
+	}
 	for _, a := range b.addons {
-		name := "csb/build.d/" + a.instance.Name + ".sh"
-		if err := addFile(name, a.data, 0755); err != nil {
+		dir := "csb/addon.d/" + a.instance.Name + "/"
+		if err := addDir(dir); err != nil {
 			return nil, err
 		}
+		for _, f := range a.files {
+			if err := addFile(dir+f.rel, f.data, f.mode); err != nil {
+				return nil, err
+			}
+		}
 	}
-	if err := addFile("csb/build.d/run.sh", b.runScript, 0755); err != nil {
+	if err := addFile("csb/addon.d/run.sh", b.runScript, 0755); err != nil {
 		return nil, err
 	}
 
