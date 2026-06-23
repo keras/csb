@@ -52,14 +52,52 @@ if [ -d /mnt/csb-home ]; then
     eval "$_prev_opts"
 fi
 
-for script in /etc/csb/entrypoint.d/*.sh; do
-    [ -x "$script" ] && source "$script"
-done
+# _apply_entrypoint_d sources the run-time addon hooks (env exports, mounts).
+_apply_entrypoint_d() {
+    for script in /etc/csb/entrypoint.d/*.sh; do
+        [ -x "$script" ] && source "$script"
+    done
+}
 
+# _run_user runs the user command as the sandbox uid. With "exec" it replaces
+# the current process (the default, single-process path); with "noexec" it runs
+# the command as a child and returns its exit code so the caller can act on it.
+#
 # gosu rewrites HOME/USER/LOGNAME from the target uid's passwd entry. When
 # HOST_UID matches the uid we're already running as, skip gosu entirely —
 # there's no privilege to drop, and skipping avoids the env rewrite.
-if [ "${HOST_UID}:${HOST_GID}" = "$(id -u):$(id -g)" ]; then
-    exec "$@"
-fi
-exec gosu "${HOST_UID}:${HOST_GID}" "$@"
+_run_user() {
+    local mode=$1; shift
+    local pre=()
+    if [ "${HOST_UID}:${HOST_GID}" != "$(id -u):$(id -g)" ]; then
+        pre=(gosu "${HOST_UID}:${HOST_GID}")
+    fi
+    if [ "$mode" = exec ]; then
+        exec "${pre[@]}" "$@"
+    fi
+    "${pre[@]}" "$@"
+}
+
+# csb_launch starts the workload. The default replaces this process with the
+# user command (the single-process sandbox). An addon that provides an init
+# system overrides csb_launch from an entrypoint.d hook to run that init as
+# PID 1 instead; it can build on _run_user. There should be at most one init
+# system, so a launcher registers itself with csb_register_launcher, which
+# fails fast if two addons try to take over.
+csb_launch() { _run_user exec "$@"; }
+
+csb_register_launcher() {
+    if [ -n "${_csb_launcher:-}" ]; then
+        echo "csb: error: addons '$_csb_launcher' and '$1' both provide an init system; enable only one" >&2
+        exit 1
+    fi
+    _csb_launcher=$1
+}
+
+# _run_user and friends are referenced by launcher overrides that fork a child
+# shell; export them so that child inherits them.
+export -f _apply_entrypoint_d _run_user
+export HOST_UID HOST_GID
+
+_apply_entrypoint_d   # a launcher-providing hook overrides csb_launch here
+csb_launch "$@"

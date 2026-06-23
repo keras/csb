@@ -1,0 +1,26 @@
+systemd — run systemd as PID 1 (boot mode)
+
+  This addon boots systemd as the container's init. Your shell still opens
+  normally; it runs as a session alongside systemd, which supervises any
+  services that other addons register.
+
+  Other addons can depend on this one by shipping unit files:
+
+    cat > /etc/systemd/system/myservice.service <<UNIT
+    [Service]
+    ExecStart=/usr/bin/myservice
+    [Install]
+    WantedBy=multi-user.target
+    UNIT
+    systemctl enable myservice
+
+  Inspect services from inside the sandbox with:
+
+    systemctl status
+    systemctl list-units --failed
+    journalctl -u <service>
+
+  Note: booting systemd needs extra container privileges (a writable cgroup
+  mount, shared cgroup namespace). On some hosts you may also need to run the
+  container --privileged. This is a heavier mode than the default minimal
+  sandbox — enable it only when an addon actually requires it.
