@@ -1,0 +1,47 @@
+#!/bin/bash
+set -euo pipefail
+
+_rundir="$HOME/.selkies"
+
+for _name in selkies coturn openbox Xorg; do
+    _pidfile="$_rundir/${_name}.pid"
+    if [ -f "$_pidfile" ]; then
+        _pid=$(cat "$_pidfile" 2>/dev/null || true)
+        # Only signal if the pid is non-empty and still alive, so we don't
+        # kill an unrelated process that recycled the pid.
+        if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+            kill "$_pid" 2>/dev/null || true
+            # Wait for it to actually exit before returning, so its sockets
+            # are released — otherwise a quick selkies-start afterwards
+            # races the dying process and fails to bind (e.g. selkies on
+            # 8080: "address already in use"). Escalate to SIGKILL if it
+            # doesn't go within ~5s.
+            for _ in $(seq 1 50); do kill -0 "$_pid" 2>/dev/null || break; sleep 0.1; done
+            kill -0 "$_pid" 2>/dev/null && kill -9 "$_pid" 2>/dev/null || true
+        fi
+        rm -f "$_pidfile"
+    fi
+done
+
+# coturn forks worker processes (SO_REUSEPORT) that each hold the
+# listening socket; killing only the main pid above leaves them bound to
+# 3478 and blocks a restart. Reap any stragglers by exact process name.
+# (We intentionally do NOT pkill selkies-gstreamer by -f: its name appears
+# in callers' command lines — e.g. a test harness's `bash -c '…'` — and
+# pkill -f would match and kill them. The pidfile kill above already stops
+# selkies' main process, which owns port 8080.)
+pkill -x turnserver 2>/dev/null || true
+
+# Xorg leaves its lock + socket behind on a signal-kill; remove them so a
+# subsequent selkies-start recreates display :1 instead of skipping it.
+rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
+
+# Mirror selkies-start's uid branch so we kill the daemon as the user that
+# owns it (selkies-audio when root, otherwise the current user).
+if [ "$(id -u)" -eq 0 ]; then
+    runuser -u selkies-audio -- env -u PULSE_SERVER -u PULSE_RUNTIME_PATH \
+        XDG_RUNTIME_DIR=/run/selkies-audio pulseaudio --kill 2>/dev/null || true
+else
+    env -u PULSE_SERVER -u PULSE_RUNTIME_PATH \
+        XDG_RUNTIME_DIR="$_rundir/pulse" pulseaudio --kill 2>/dev/null || true
+fi

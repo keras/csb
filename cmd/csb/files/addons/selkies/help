@@ -1,0 +1,50 @@
+selkies — desktop over WebRTC (Selkies, with synchronized audio)
+
+Run a virtual desktop (Xorg dummy + openbox) streamed to your browser via
+WebRTC using Selkies-GStreamer, including audio from a PulseAudio sink:
+
+    selkies-start      start the desktop + Selkies, prints the URL
+    selkies-stop       tear it down
+
+The desktop listens on port 8080 (HTTP) inside the sandbox. To reach
+it from the host the port must be PUBLISHED when you start csb — it is
+not exposed automatically:
+
+    csb --addon selkies --publish 8080                 # dynamic host port
+    csb --addon selkies --publish 127.0.0.1:8080:8080  # fixed host port
+
+selkies-start prints the correct URL using the host port csb allocated
+($CSB_PUBLISH_8080); without --publish it falls back to 8080.
+
+No login is required: basic auth is disabled so the URL opens straight
+to the desktop. This suits a localhost/published-port sandbox — anyone
+who can reach the published port gets in, so do not bind it to a public
+address. (Credentials cannot be embedded in the URL: the web client's
+relative fetch() calls fail on URLs with embedded credentials.)
+
+WebRTC media is relayed through a LOCAL coturn TURN server bundled in
+the addon — no public STUN/TURN is used, and it works regardless of
+network topology (Linux, a macOS VM, or a remote host). coturn listens
+on TCP 3478 and is auto-published on 127.0.0.1:3478 (a fixed mapping, so
+the same turn:127.0.0.1:3478 resolves from both the host browser and the
+in-container streamer). All ICE is forced to relay through it
+(iceTransportPolicy=relay). It is bound to 127.0.0.1 only; like the web
+port, treat it as localhost-only and do not expose it publicly.
+
+The TURN credentials default to selkies / csbturn; override before
+selkies-start with CSB_SELKIES_TURN_USER and CSB_SELKIES_TURN_PASSWORD if
+desired. Note these creds are NOT the security boundary — the localhost-only
+publish of both 8080 and 3478 is. Don't expose either port publicly.
+
+Audio and video are streamed together over WebRTC. Most browsers block
+autoplaying audio with sound until you interact with the page — click
+anywhere on the page or the speaker icon to start hearing audio.
+
+The desktop resolution follows your browser window automatically: Selkies
+resizes the remote display to match the window (rendering at native
+resolution, not scaling the stream), up to a maximum of 3840x2160 (4K).
+Set the INITIAL resolution (shown until a browser connects) before
+selkies-start via CSB_SELKIES_GEOMETRY (default 1280x800x24; the depth
+field is accepted but the desktop runs at 24-bit):
+
+    CSB_SELKIES_GEOMETRY=1920x1080x24 selkies-start

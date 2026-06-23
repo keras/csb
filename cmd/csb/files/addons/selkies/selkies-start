@@ -1,0 +1,304 @@
+#!/bin/bash
+set -euo pipefail
+: "${CSB_SELKIES_GEOMETRY:=1280x800x24}"
+if ! [[ "$CSB_SELKIES_GEOMETRY" =~ ^[0-9]+x[0-9]+x[0-9]+$ ]]; then
+    echo "selkies-start: invalid CSB_SELKIES_GEOMETRY '$CSB_SELKIES_GEOMETRY'" \
+         "(expected WxHxDEPTH, e.g. 1280x800x24)" >&2
+    exit 1
+fi
+IFS=x read -r _width _height _depth <<<"$CSB_SELKIES_GEOMETRY"
+
+# With SELKIES_ENABLE_RESIZE=true (below) Selkies resizes the X display to
+# match the browser window on the fly by adding RANDR modes at runtime
+# (xrandr --newmode/--addmode/--output). The Xorg dummy driver allows this
+# up to its Virtual size, which is fixed in /etc/X11/xorg.conf at build time
+# (see install — a non-root user cannot write a system config, and Xorg's
+# setuid wrapper rejects a -config outside the trusted dirs, so the config
+# must be baked in). CSB_SELKIES_GEOMETRY is just the INITIAL size, shown
+# until a browser connects and Selkies resizes to the window.
+
+_rundir="$HOME/.selkies"
+mkdir -p "$_rundir"
+
+export DISPLAY=:1
+
+# True if "<name>.pid" names a LIVE process whose command line contains
+# <match>. Used to make selkies-start idempotent without breaking on
+# restart: the pidfiles live under $HOME (the persistent csb-home volume),
+# so a stale pidfile from a previous container can name a pid that a fresh
+# container has reused for an unrelated process. A bare `kill -0` would
+# then wrongly report the daemon as running and skip (re)starting it —
+# e.g. leaving no TURN relay, which kills the WebRTC connection. The
+# <match> identity check defeats that: a reused pid won't be the daemon.
+_running() {
+    local f="$_rundir/$1.pid" match="$2" p
+    [ -f "$f" ] || return 1
+    p=$(cat "$f" 2>/dev/null) || return 1
+    [ -n "$p" ] && [ -r "/proc/$p/cmdline" ] || return 1
+    tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q -- "$match"
+}
+
+# PulseAudio refuses to run as root, but runs fine as a normal
+# unprivileged user. csb usually maps the host user in, so this script
+# typically runs NON-root (the common case); the addon integration test
+# runs it as root. Branch accordingly:
+#
+#   * non-root: run PulseAudio directly as the current user, with its
+#     runtime dir + anonymous socket under a user-writable path
+#     ($HOME/.selkies/pulse). No /run, no chown, no runuser.
+#   * root: run PulseAudio as the dedicated unprivileged selkies-audio
+#     user (created at install time) via runuser, with the socket under
+#     /run/selkies-audio (mode 0755 so any uid can traverse to it).
+#
+# In both cases default.pa opens an anonymous native socket
+# (auth-anonymous=1 accepts any uid) and creates the csb-audio null sink
+# server-side, and PULSE_SERVER points at that socket. Selkies runs as
+# the same uid as this script and connects over that socket.
+if [ "$(id -u)" -eq 0 ]; then
+    _audio_user=selkies-audio
+    _audio_runtime=/run/selkies-audio
+else
+    _audio_user=""
+    _audio_runtime="$_rundir/pulse"
+fi
+_audio_socket="${_audio_runtime}/native"
+_audio_conf="${_audio_runtime}/default.pa"
+# PulseAudio insists on creating a "secure" state/config dir under
+# XDG_CONFIG_HOME (default $HOME/.config/pulse). In the sandbox $HOME may
+# not have a writable .config, so point both XDG dirs at our own runtime
+# dir to keep PulseAudio fully self-contained there.
+_audio_config="${_audio_runtime}/config"
+export PULSE_SERVER="unix:${_audio_socket}"
+
+# Helper: run a command as the audio user (root branch) or directly
+# (non-root branch), always with a clean PULSE env + the right runtime
+# and config dirs.
+_audio_run() {
+    if [ -n "$_audio_user" ]; then
+        runuser -u "$_audio_user" -- env -u PULSE_SERVER -u PULSE_RUNTIME_PATH \
+            XDG_RUNTIME_DIR="$_audio_runtime" XDG_CONFIG_HOME="$_audio_config" "$@"
+    else
+        env -u PULSE_SERVER -u PULSE_RUNTIME_PATH \
+            XDG_RUNTIME_DIR="$_audio_runtime" XDG_CONFIG_HOME="$_audio_config" "$@"
+    fi
+}
+
+mkdir -p "$_audio_runtime" "$_audio_config"
+if [ -n "$_audio_user" ]; then
+    chown -R "$_audio_user:$_audio_user" "$_audio_runtime"
+    chmod 0755 "$_audio_runtime"
+fi
+
+# Start the X server on :1 if not already running. We use Xorg with the
+# 'dummy' driver rather than Xvfb: Selkies' dynamic resize works by ADDING
+# RANDR modes at runtime (xrandr --newmode/--addmode/--output), and Xvfb
+# silently ignores RRCreateMode (the mode is never created), so resize can
+# never take effect there. The dummy driver supports adding modes up to its
+# Virtual size and needs no GPU/KMS, so it runs headless in the container.
+#
+# We key off our own pidfile rather than /tmp/.X1-lock: a signal-killed Xorg
+# leaves that lock (and the socket) behind, so trusting it would make a
+# restart skip Xorg and bring up a broken (display-less) desktop. Clear
+# those stale artifacts before (re)starting.
+if ! _running Xorg Xorg; then
+    rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
+    # No -config here on purpose: in the normal non-root case Xorg runs via
+    # its setuid wrapper (elevated), which rejects any -config that is not a
+    # bare relative name in a trusted dir. So the dummy config is baked into
+    # /etc/X11/xorg.conf at build time and auto-loaded. vt9 + -keeptty: there
+    # are no real VTs in the container, so keep Xorg on its launching tty
+    # instead of trying to switch consoles.
+    Xorg :1 -noreset -nolisten tcp -keeptty vt9 \
+        > "$_rundir/Xorg.log" 2>&1 &
+    echo $! > "$_rundir/Xorg.pid"
+    for _ in $(seq 1 100); do
+        [ -e /tmp/.X11-unix/X1 ] && break
+        sleep 0.1
+    done
+    if [ ! -e /tmp/.X11-unix/X1 ]; then
+        echo "selkies-start: Xorg failed to start display :1" >&2
+        cat "$_rundir/Xorg.log" >&2 2>/dev/null || true
+        exit 1
+    fi
+    # Set the INITIAL resolution (shown until a browser connects and Selkies
+    # resizes to the window). Same xrandr path (and cvt modeline) Selkies
+    # uses. Best-effort: if it fails the desktop just stays at the Virtual
+    # size from /etc/X11/xorg.conf.
+    _out=$(xrandr --query 2>/dev/null | awk '/ connected/{print $1; exit}' || true)
+    if [ -n "$_out" ]; then
+        _ml=$(cvt -r "$_width" "$_height" 60 2>/dev/null \
+            | sed -n 's/^[[:space:]]*Modeline[[:space:]]*"[^"]*"[[:space:]]*//p')
+        if [ -n "$_ml" ]; then
+            xrandr --newmode "${_width}x${_height}" $_ml 2>/dev/null || true
+            xrandr --addmode "$_out" "${_width}x${_height}" 2>/dev/null || true
+            xrandr --output "$_out" --mode "${_width}x${_height}" 2>/dev/null || true
+        fi
+    fi
+fi
+
+# Start the window manager (idempotent).
+if ! _running openbox openbox; then
+    openbox > "$_rundir/openbox.log" 2>&1 &
+    echo $! > "$_rundir/openbox.pid"
+fi
+
+# Start PulseAudio. It loads default.pa (generated here so the socket
+# path matches the chosen runtime dir), which opens the anonymous socket
+# and creates the csb-audio null sink server-side, so Selkies has an
+# audio device to capture and stream to the browser even without real
+# hardware.
+cat > "$_audio_conf" <<PA
+.fail
+load-module module-native-protocol-unix auth-anonymous=1 socket=${_audio_socket}
+load-module module-null-sink sink_name=csb-audio sink_properties=device.description=csb-audio
+set-default-sink csb-audio
+PA
+if [ -n "$_audio_user" ]; then
+    chown "$_audio_user:$_audio_user" "$_audio_conf"
+fi
+if ! _audio_run pulseaudio --check 2>/dev/null; then
+    # Guard the start: default.pa uses `.fail`, so a bad module load makes
+    # pulseaudio exit non-zero, which under `set -e` would abort the whole
+    # script with no diagnostic. Surface the log and bail instead.
+    if ! _audio_run pulseaudio --start --exit-idle-time=-1 --disallow-exit \
+            -n -F "$_audio_conf" > "$_rundir/pulseaudio.log" 2>&1; then
+        echo "selkies-start: PulseAudio failed to start" >&2
+        cat "$_rundir/pulseaudio.log" >&2 2>/dev/null || true
+        exit 1
+    fi
+    for _ in $(seq 1 50); do
+        [ -S "$_audio_socket" ] && break
+        sleep 0.1
+    done
+    if [ ! -S "$_audio_socket" ]; then
+        echo "selkies-start: PulseAudio socket $_audio_socket never appeared" >&2
+        cat "$_rundir/pulseaudio.log" >&2 2>/dev/null || true
+        exit 1
+    fi
+fi
+# The sink is created server-side by default.pa; these client-side calls
+# are only a harmless, idempotent fallback (they connect over the same
+# anonymous socket, so they are no longer denied).
+pactl list short sinks 2>/dev/null | grep -q csb-audio || \
+    pactl load-module module-null-sink sink_name=csb-audio sink_properties=device.description=csb-audio \
+        >> "$_rundir/pulseaudio.log" 2>&1 || true
+pactl set-default-sink csb-audio >/dev/null 2>&1 || true
+
+# Selkies streams the X display + the default PulseAudio sink over
+# WebRTC, serving the HTML5 client on SELKIES_PORT. Resizing is ENABLED:
+# Selkies resizes the X display to match the browser window on the fly
+# (RANDR), so the desktop renders at the window's native resolution rather
+# than being scaled. Xorg's dummy driver was started with a Virtual size
+# (the max envelope) above to give the resize room to grow.
+# No basic auth: the desktop opens directly with no login prompt. This
+# is intended for a localhost/published-port sandbox; anyone who can
+# reach the published port gets in, so don't bind it to a public address.
+# (Embedding credentials in the URL is not an option — it breaks the
+# client's relative fetch() calls; see the URL note below.)
+export SELKIES_ENABLE_BASIC_AUTH=false
+export SELKIES_ENABLE_RESIZE=true
+export SELKIES_ENCODER=x264enc
+export SELKIES_ADDR=0.0.0.0
+export SELKIES_PORT=8080
+
+# Start a LOCAL coturn TURN relay and force all WebRTC media through it.
+# This avoids any public STUN/TURN and works regardless of network
+# topology: host-only ICE candidates point at the container's internal
+# bridge IP/UDP, which the browser cannot reach (it only has the
+# published TCP port), so without a relay media never connects. coturn
+# listens on TCP 3478 (auto-published 127.0.0.1:3478:3478), reachable
+# from both the host browser and the in-container webrtcbin via the same
+# turn:127.0.0.1:3478. Port 3478 > 1024, so this runs fine as the current
+# (possibly non-root) user — no runuser needed.
+: "${CSB_SELKIES_TURN_USER:=selkies}"
+: "${CSB_SELKIES_TURN_PASSWORD:=csbturn}"
+# Allocate relayed candidates on the container's real (non-loopback) IP,
+# not 127.0.0.1. Firefox discards ICE candidates with loopback addresses,
+# so a 127.0.0.1 relay candidate leaves it with nothing and ICE fails
+# (Chrome is lenient and works either way). The browser never contacts
+# this address directly — TURN tunnels media through the published 3478
+# control connection — it only needs to be an address coturn and the
+# in-container webrtcbin can use, and a non-loopback one Firefox accepts.
+_relay_ip=$(hostname -I 2>/dev/null | tr ' ' '\n' \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | grep -v '^127\.' | head -1)
+[ -n "$_relay_ip" ] || _relay_ip=127.0.0.1
+cat > "$_rundir/turnserver.conf" <<CONF
+listening-port=3478
+listening-ip=0.0.0.0
+relay-ip=${_relay_ip}
+min-port=49152
+max-port=49215
+lt-cred-mech
+realm=csb
+user=${CSB_SELKIES_TURN_USER}:${CSB_SELKIES_TURN_PASSWORD}
+fingerprint
+no-tls
+no-dtls
+no-cli
+# The peer (the in-container webrtcbin) is on 127.0.0.1, which coturn
+# refuses to relay to unless loopback peers are explicitly allowed.
+allow-loopback-peers
+simple-log
+log-file=${_rundir}/coturn.log
+no-software-attribute
+CONF
+# coturn writes its own log via log-file= in the config; capture any
+# pre-logging startup output (e.g. config errors) separately so the two
+# don't fight over the same file descriptor. We deliberately do NOT set
+# pidfile= in the config: turnserver runs in the foreground here, so the
+# shell's $! is the authoritative pid and the single source of truth for
+# selkies-stop (two writers could otherwise disagree and orphan coturn,
+# wedging port 3478).
+if ! _running coturn turnserver; then
+    turnserver -c "$_rundir/turnserver.conf" > "$_rundir/coturn.startup.log" 2>&1 &
+    echo $! > "$_rundir/coturn.pid"
+    _coturn_ok=
+    for _ in $(seq 1 100); do
+        if (exec 3<>/dev/tcp/127.0.0.1/3478) 2>/dev/null; then
+            exec 3>&-; _coturn_ok=1; break
+        fi
+        sleep 0.1
+    done
+    if [ -z "$_coturn_ok" ]; then
+        echo "selkies-start: coturn failed to listen on 3478" >&2
+        cat "$_rundir/coturn.startup.log" "$_rundir/coturn.log" >&2 2>/dev/null || true
+        exit 1
+    fi
+fi
+
+# Force all media to relay through the local coturn (iceTransportPolicy
+# = relay). Both the browser and the in-container webrtcbin read this
+# file verbatim and use the same turn:127.0.0.1:3478 over TCP. coturn's
+# relay ports (min/max-port above) are only used coturn<->webrtcbin
+# locally, so they need no publishing. Selkies uses this file when it
+# exists, short-circuiting its default public-STUN logic.
+cat > "$_rundir/rtc.json" <<JSON
+{
+  "lifetimeDuration": "86400s",
+  "iceServers": [
+    {
+      "urls": ["turn:127.0.0.1:3478?transport=tcp"],
+      "username": "${CSB_SELKIES_TURN_USER}",
+      "credential": "${CSB_SELKIES_TURN_PASSWORD}"
+    }
+  ],
+  "blockStatus": "NOT_BLOCKED",
+  "iceTransportPolicy": "relay"
+}
+JSON
+export SELKIES_RTC_CONFIG_JSON="$_rundir/rtc.json"
+
+if ! _running selkies selkies-gstreamer; then
+    selkies-gstreamer > "$_rundir/selkies.log" 2>&1 &
+    echo $! > "$_rundir/selkies.pid"
+fi
+
+_port=${CSB_PUBLISH_8080:-8080}
+# NOTE: credentials must NOT be embedded in this URL. The Selkies web
+# client does relative fetch() calls (e.g. /turn) at startup; if the page
+# was loaded from http://user:pass@host/, those resolve to URLs with
+# embedded credentials, which the Fetch spec forbids — fetch() throws and
+# the client hangs on a spinner. So print a clean URL.
+echo "GUI ready: http://localhost:${_port}/"
+echo "(audio starts muted in most browsers - click the speaker icon"
+echo " or anywhere on the page to allow audio playback)"
