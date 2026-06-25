@@ -1,16 +1,5 @@
 #!/bin/bash
 
-_verbose_run() {
-    t0=${EPOCHREALTIME/./}
-    "$@"
-    rc=$?
-    if [ -n "${CSB_VERBOSE}" ]; then
-        dt=$(( ${EPOCHREALTIME/./} - t0 ))
-        printf '[csb][%s]: %d.%03ds\n' "$*" "$((dt / 1000000))" "$(( (dt % 1000000) / 1000 ))" >&2
-    fi
-    return $rc
-}
-
 HOST_UID="${HOST_UID:-0}"
 HOST_GID="${HOST_GID:-0}"
 _shell=$(command -v "${CSB_DEFAULT_SHELL:-bash}" 2>/dev/null)
