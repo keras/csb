@@ -1,0 +1,3 @@
+# NOPASSWD only for podman, scoped tighter than the general sudo addon (which,
+# if also enabled, coexists with this rule harmlessly).
+sandbox ALL=(root) NOPASSWD: /usr/bin/podman

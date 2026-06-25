@@ -466,16 +466,12 @@ func ResolveMounts(cfg *Config) []Mount {
 }
 
 // ResolveEnv collects environment variables to pass into the container.
-func ResolveEnv(cfg *Config, brokerURL, brokerToken string) [][2]string {
+func ResolveEnv(cfg *Config, rt *Runtime, brokerURL, brokerToken string) [][2]string {
 	var env [][2]string
 
-	// HOST_UID, HOST_GID
-	hostUID := fmt.Sprintf("%d", os.Getuid())
-	hostGID := fmt.Sprintf("%d", os.Getgid())
-	if cfg.ContainerCLI() == "podman" && os.Getuid() != 0 {
-		hostUID = "0"
-		hostGID = "0"
-	}
+	// HOST_UID, HOST_GID — the runtime decides whether the container user maps
+	// to the caller's real uid or to 0 (rootless podman); see Runtime.HostIDs.
+	hostUID, hostGID := rt.HostIDs()
 	env = append(env, [2]string{"HOST_UID", hostUID})
 	env = append(env, [2]string{"HOST_GID", hostGID})
 	env = append(env, [2]string{"HOME", ContainerHome})

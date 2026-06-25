@@ -1,0 +1,19 @@
+podman — rootful containers inside the sandbox
+
+  Run nested containers as root with podman:
+
+    podman run --rm hello-world
+    podman build -t myimage .
+
+  The sandbox shell is non-root, so `podman` is a wrapper that elevates
+  via sudo (the real binary is /usr/bin/podman). Containers run as real
+  root in their own namespaces — no uid mapping — which avoids the
+  rootless limitations that block some images and mounts.
+
+  Images and layers persist across csb runs under your home volume.
+
+  Note: rootful nested containers can't get cgroup delegation or mount a
+  private /proc in an unprivileged container, so csb runs the sandbox as a
+  privileged container (the docker:dind recipe) when this addon is enabled.
+  That is a large privilege relaxation — use the podman-rootless addon if
+  you don't need the rootful behaviour.

@@ -1,0 +1,6 @@
+#!/bin/bash
+# The sandbox shell is non-root, so a bare `podman` would silently use the
+# rootless code path. /usr/local/bin precedes /usr/bin on PATH, so this wrapper
+# shadows the real binary and elevates through sudo. It calls the absolute path
+# to avoid recursing through itself.
+exec sudo /usr/bin/podman "$@"

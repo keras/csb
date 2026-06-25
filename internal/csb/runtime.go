@@ -24,6 +24,36 @@ func NewRuntime(cli string) *Runtime {
 	return &Runtime{CLI: cli}
 }
 
+// HostIDs returns the uid/gid the container's user should be created with so
+// that files it writes to bind mounts end up owned by the invoking host user.
+//
+// Docker and rootful podman run the container's user as the caller's real uid,
+// so that is what we pass. Rootless podman is the exception: it remaps the
+// container's uid 0 back to the invoking user via /etc/subuid, so the container
+// must run as 0/0 to land back on the host user. This encapsulates that
+// runtime-specific quirk instead of leaking it into env construction.
+func (r *Runtime) HostIDs() (uid, gid string) {
+	uid = fmt.Sprintf("%d", os.Getuid())
+	gid = fmt.Sprintf("%d", os.Getgid())
+	if r.CLI == "podman" && r.podmanRootless() {
+		uid, gid = "0", "0"
+	}
+	return uid, gid
+}
+
+// podmanRootless reports whether podman runs containers rootless, asking podman
+// directly (Host.Security.Rootless) rather than guessing from the caller's uid —
+// the rootful `podman` wrapper from the podman addon runs as a non-root user but
+// is not rootless. Falls back to the non-root-invoker heuristic if podman can't
+// be queried.
+func (r *Runtime) podmanRootless() bool {
+	out, err := exec.Command(r.CLI, "info", "--format", "{{.Host.Security.Rootless}}").Output()
+	if err != nil {
+		return os.Getuid() != 0
+	}
+	return strings.TrimSpace(string(out)) == "true"
+}
+
 // ImageExists returns true if the named image exists locally.
 func (r *Runtime) ImageExists(name string) bool {
 	cmd := exec.Command(r.CLI, "image", "inspect", name)

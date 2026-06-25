@@ -368,7 +368,7 @@ func RunRun(cfg *Config, rt *Runtime, assets Assets) error {
 		logInfo("mount", "host", m.Src, "container", m.Dst, "mode", mode)
 	}
 
-	env := ResolveEnv(cfg, brokerURL, brokerToken)
+	env := ResolveEnv(cfg, rt, brokerURL, brokerToken)
 	cmd, err := BuildRunCommand(cfg, mounts, env, imgName)
 	if err != nil {
 		return err

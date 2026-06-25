@@ -9,7 +9,7 @@ Run commands in an isolated container with a persistent home.
 - Host config overlay: files in `~/.config/csb/home/` are symlinked into the container home
 - `csb-persist` — promote a home directory entry to the host config overlay without restarting
 - Optional addon system (mise by default) for installing various tools
-- Optional nested Podman support
+- Optional nested Podman support (rootful or rootless)
 - Optional host-exec bridge — sandbox can call whitelisted host commands via `csb-host-run`
 - Image cached by content hash — rebuilds only when config changes
 
@@ -43,8 +43,7 @@ csb -- python script.py  # run a command directly
 ```yaml
 # tmux: true
 # tty: true          # default: auto-detect from stdin
-# nested_podman: false
-# addons: [mise]
+# addons: [mise, sudo]
 # home_volume: csb-home
 # mount:
 #   - ~/.ssh:~/.ssh
@@ -153,7 +152,7 @@ csb is an isolation tool, not a hard security boundary. Its goal is to contain a
 
 When any of these happen inside csb, the container and what's mounted there (the workspace dir and home volume) is what gets wiped; the host stays intact. Reset with `csb --reset-home` and continue.
 
-csb is **not** a hardened boundary against deliberately malicious code. When `nested_podman: true`, csb enables the following to support rootless Podman inside the container:
+csb is **not** a hardened boundary against deliberately malicious code. The `podman-rootless` addon enables the following to support nested rootless Podman inside the container:
 
 | Flag                                 | Why                                                                                                                                 |
 | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -164,7 +163,9 @@ csb is **not** a hardened boundary against deliberately malicious code. When `ne
 | `--device /dev/fuse`                 | fuse-overlayfs storage driver for nested containers                                                                                 |
 | `--device /dev/net/tun`              | slirp4netns user-mode networking for nested containers                                                                              |
 
-With that combination, a kernel vulnerability in the exposed syscall surface is reachable from inside the container. Do not run untrusted code here — if you need tighter isolation, use a different tool.
+The `podman` (rootful) addon goes further and runs the container `--privileged`, because rootful nested containers need cgroup delegation, a mountable `/proc`, and native overlay storage that the flags above don't provide.
+
+With either, a kernel vulnerability in the exposed syscall surface is reachable from inside the container. Do not run untrusted code here — if you need tighter isolation, use a different tool.
 
 ## Environment variables
 
@@ -172,7 +173,6 @@ With that combination, a kernel vulnerability in the exposed syscall surface is 
 | ------------------- | ---------------------------------------------------------------------------------------- |
 | `CSB_IMAGE`         | Override the image name/tag                                                              |
 | `CSB_RUNTIME`       | Override runtime (`auto`, `docker`, `podman`)                                            |
-| `CSB_NESTED_PODMAN` | Set to `0` to disable nested Podman                                                      |
 | `CSB_HOME_VOLUME`   | Override home volume name (overrides `home_volume:` in config.yaml, default: `csb-home`) |
 | `CSB_CONFIG_DIR`    | Override config directory path (default: `~/.config/csb`)                                |
 | `CSB_ENV_FORWARD`   | Space-separated list of host env var names to forward into the container                 |
@@ -195,3 +195,31 @@ node = "lts"
 python = "latest"
 opencode = "latest"
 ```
+
+### Nested Podman
+
+Enable nested containers with one of two addons:
+
+```yaml
+addons: [mise, sudo, podman]           # rootful
+addons: [mise, sudo, podman-rootless]  # rootless
+```
+
+- **`podman`** (rootful) — inner containers run as real root in their own
+  namespaces, with no uid mapping. This matches how containers behave on a
+  normal host and avoids the subuid/`newuidmap` limitations that make some
+  images, mounts, and ports fail under rootless. The sandbox shell is
+  non-root, so `podman` is a wrapper that elevates via sudo (the real binary
+  is `/usr/bin/podman`). Images persist across runs under the home volume.
+  Rootful podman nested in an unprivileged container can't get cgroup v2
+  delegation, mount a private `/proc`, or use fuse-overlayfs (its rootfs fails
+  to exec on some kernels), so this addon runs the **sandbox container itself
+  as `--privileged`** (the `docker:dind` recipe) — a large privilege
+  relaxation. Use `podman-rootless` if you don't need rootful behaviour.
+- **`podman-rootless`** — `podman` runs as the sandbox user with slirp4netns
+  networking and uid mapping. More isolated (no `--privileged`), but some
+  features are unsupported.
+
+Both addons pull in extra container privileges (see
+[Scope of isolation](#scope-of-isolation)); `podman` additionally runs
+`--privileged`.

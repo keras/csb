@@ -66,7 +66,9 @@ func InitConfigDir(configDir string, addonsFS fs.FS) {
 		if _, err := os.Stat(path); err == nil {
 			return
 		}
-		fmt.Fprintf(os.Stderr, "Creating %s …\n", path)
+		// Per-file noise is verbose-only; the "Initialising …" line above is
+		// enough to signal a fresh config dir is being seeded.
+		logInfo("creating config file", "path", path)
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 			fmt.Fprintf(os.Stderr, "csb: warning: failed to create dir for %s: %v\n", path, err)
 			return
@@ -81,7 +83,7 @@ func InitConfigDir(configDir string, addonsFS fs.FS) {
 		if _, err := os.Stat(path); err == nil {
 			return
 		}
-		fmt.Fprintf(os.Stderr, "Creating %s …\n", path)
+		logInfo("creating config dir", "path", path)
 		if err := os.MkdirAll(path, 0755); err != nil {
 			fmt.Fprintf(os.Stderr, "csb: warning: failed to create %s: %v\n", path, err)
 		}

@@ -1,75 +1,27 @@
 #!/bin/bash
-# csb:run-arg --device /dev/fuse
-# csb:run-arg --device /dev/net/tun
-# csb:run-arg --security-opt seccomp=unconfined
-# csb:run-arg --security-opt apparmor=unconfined
-# csb:run-arg --cap-add SYS_ADMIN
-# csb:run-arg --cap-add NET_ADMIN
+# Rootful podman nested in an unprivileged container can't get cgroup v2
+# controller delegation, mount a private /proc, or use fuse-overlayfs (its
+# rootfs fails to exec on some kernels). Running the sandbox as a privileged
+# container (the docker:dind recipe) clears all three. --privileged already
+# implies the caps, devices, and seccomp/apparmor unconfined that nested podman
+# needs, so it is the only run-arg required here.
+# csb:run-arg --privileged
 
 set -euo pipefail
 
-apt-get install -y fuse-overlayfs podman uidmap
+apt-get install -y fuse-overlayfs podman uidmap sudo netavark aardvark-dns iptables
 
-mkdir -p /etc/containers
+# Common policy + registry config. The bundled resources live next to this
+# install.sh; install -D creates parent dirs as needed.
+install -D -m 0644 policy.json     /etc/containers/policy.json
+install -D -m 0644 registries.conf /etc/containers/registries.conf
+install -D -m 0644 storage.conf    /etc/containers/storage.conf
+install -D -m 0644 containers.conf /etc/containers/containers.conf
+install -D -m 0755 entrypoint.sh   /etc/csb/entrypoint.d/podman.sh
+install -D -m 0644 help            /etc/csb/help.d/podman
 
-cat > /etc/containers/policy.json <<'EOF'
-{"default":[{"type":"insecureAcceptAnything"}]}
-EOF
-
-cat > /etc/containers/registries.conf <<'EOF'
-[registries.search]
-registries = ["docker.io"]
-EOF
-
-cat > /etc/containers/storage.conf <<'EOF'
-[storage]
-driver = "overlay"
-runroot = "/run/containers/storage"
-graphroot = "/var/lib/containers/storage"
-
-[storage.options.overlay]
-mount_program = "/usr/bin/fuse-overlayfs"
-EOF
-
-cat > /etc/containers/containers.conf <<'EOF'
-[containers]
-# Docker bind-mounts /proc/sys read-only so crun cannot set sysctls.
-default_sysctls = []
-# Sharing the outer PID namespace avoids crun needing to mount a new proc
-# inside a nested user+mount namespace, which Docker prevents.
-pidns = "host"
-# slirp4netns sets accept_dad before the inner mount namespace is active,
-# hitting the outer read-only /proc/sys; disabling IPv6 skips that sysctl.
-network_cmd_options = ["enable_ipv6=false"]
-EOF
-
-cat > /etc/csb/entrypoint.d/podman.sh <<'EOF'
-# Promote root mount to shared propagation so Podman can propagate mounts
-# across its own mount namespaces (Docker defaults to private propagation).
-mount --make-rshared /
-# subuid/subgid ranges required by rootless Podman for uid mapping
-echo "sandbox:100000:65536" >> /etc/subuid
-echo "sandbox:100000:65536" >> /etc/subgid
-# XDG_RUNTIME_DIR is required by rootless Podman for its socket
-export XDG_RUNTIME_DIR="/run/user/${HOST_UID}"
-mkdir -p "${XDG_RUNTIME_DIR}"
-chmod 700 "${XDG_RUNTIME_DIR}"
-chown "${HOST_UID}:${HOST_GID}" "${XDG_RUNTIME_DIR}"
-# Make /proc/sys writable so nested container runtimes can configure
-# network namespaces. Requires SYS_ADMIN + seccomp=unconfined.
-mount -o remount,rw /proc/sys 2>/dev/null || true
-EOF
-chmod +x /etc/csb/entrypoint.d/podman.sh
-
-cat <<'EOT' > /etc/csb/help.d/podman
-podman — rootless containers inside the sandbox
-
-  Run nested, rootless containers with podman:
-
-    podman run --rm hello-world
-    podman build -t myimage .
-
-  Uses fuse-overlayfs storage under your home, so images and layers
-  persist across csb runs. Requires the extra capabilities csb grants
-  when this addon is enabled.
-EOT
+# The sandbox shell is non-root; reach a root podman through sudo. A wrapper
+# makes the bare `podman` command elevate transparently (a bare invocation would
+# otherwise silently fall back to the rootless code path).
+install -D -m 0440 sudoers /etc/sudoers.d/podman
+install -D -m 0755 podman  /usr/local/bin/podman

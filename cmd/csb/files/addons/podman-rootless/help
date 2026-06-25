@@ -1,0 +1,10 @@
+podman — rootless containers inside the sandbox
+
+  Run nested, rootless containers with podman:
+
+    podman run --rm hello-world
+    podman build -t myimage .
+
+  Uses fuse-overlayfs storage under your home, so images and layers
+  persist across csb runs. Requires the extra capabilities csb grants
+  when this addon is enabled.

@@ -3,6 +3,7 @@ package csb
 import (
 	"archive/tar"
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,7 +62,7 @@ func TestParseAddonRunArgs_Dedup(t *testing.T) {
 	got, err := parseAddonRunArgs([]string{f1, f2})
 	require.NoError(t, err)
 	// "--cap-add SYS_ADMIN" is a single directive; tokens are --cap-add and SYS_ADMIN
-	// but the dedup key is the raw val "-- cap-add SYS_ADMIN", so tokens appear once
+	// but the dedup key is the raw val "--cap-add SYS_ADMIN", so tokens appear once
 	assert.Equal(t, []string{"--cap-add", "SYS_ADMIN"}, got)
 }
 
@@ -489,9 +490,17 @@ func TestResolveEnv_HostUIDGID(t *testing.T) {
 	cfg.Runtime = "docker"
 	cfg.DefaultShell = "bash"
 
-	env := envMap(ResolveEnv(cfg, "", ""))
+	env := envMap(ResolveEnv(cfg, NewRuntime("docker"), "", ""))
 	assert.NotEmpty(t, env["HOST_UID"])
 	assert.NotEmpty(t, env["HOST_GID"])
+}
+
+// Docker (and rootful podman) pass the caller's real uid/gid through; only
+// rootless podman remaps to 0/0, which Runtime.HostIDs queries podman for.
+func TestRuntimeHostIDs_Docker(t *testing.T) {
+	uid, gid := NewRuntime("docker").HostIDs()
+	assert.Equal(t, fmt.Sprintf("%d", os.Getuid()), uid)
+	assert.Equal(t, fmt.Sprintf("%d", os.Getgid()), gid)
 }
 
 func TestResolveEnv_TERMFallback(t *testing.T) {
@@ -500,7 +509,7 @@ func TestResolveEnv_TERMFallback(t *testing.T) {
 	cfg.Runtime = "docker"
 	cfg.DefaultShell = "bash"
 
-	env := envMap(ResolveEnv(cfg, "", ""))
+	env := envMap(ResolveEnv(cfg, NewRuntime("docker"), "", ""))
 	assert.Equal(t, "xterm-256color", env["TERM"])
 }
 
@@ -510,7 +519,7 @@ func TestResolveEnv_TERMFromHost(t *testing.T) {
 	cfg.Runtime = "docker"
 	cfg.DefaultShell = "bash"
 
-	env := envMap(ResolveEnv(cfg, "", ""))
+	env := envMap(ResolveEnv(cfg, NewRuntime("docker"), "", ""))
 	assert.Equal(t, "screen-256color", env["TERM"])
 }
 
@@ -521,7 +530,7 @@ func TestResolveEnv_EnvForwardSet(t *testing.T) {
 	cfg.DefaultShell = "bash"
 	cfg.EnvForward = []string{"MY_TOKEN"}
 
-	env := envMap(ResolveEnv(cfg, "", ""))
+	env := envMap(ResolveEnv(cfg, NewRuntime("docker"), "", ""))
 	assert.Equal(t, "secret", env["MY_TOKEN"])
 }
 
@@ -533,7 +542,7 @@ func TestResolveEnv_EnvForwardUnset(t *testing.T) {
 	cfg.DefaultShell = "bash"
 	cfg.EnvForward = []string{"MY_UNSET_VAR"}
 
-	env := envMap(ResolveEnv(cfg, "", ""))
+	env := envMap(ResolveEnv(cfg, NewRuntime("docker"), "", ""))
 	_, ok := env["MY_UNSET_VAR"]
 	assert.False(t, ok)
 }
@@ -544,7 +553,7 @@ func TestResolveEnv_EnvInject(t *testing.T) {
 	cfg.DefaultShell = "bash"
 	cfg.EnvInject = []string{"FOO=bar", "BAZ=qux=with=equals"}
 
-	env := envMap(ResolveEnv(cfg, "", ""))
+	env := envMap(ResolveEnv(cfg, NewRuntime("docker"), "", ""))
 	assert.Equal(t, "bar", env["FOO"])
 	assert.Equal(t, "qux=with=equals", env["BAZ"])
 }
@@ -554,7 +563,7 @@ func TestResolveEnv_BrokerURLAndToken(t *testing.T) {
 	cfg.Runtime = "docker"
 	cfg.DefaultShell = "bash"
 
-	env := envMap(ResolveEnv(cfg, "http://localhost:9000", "tok123"))
+	env := envMap(ResolveEnv(cfg, NewRuntime("docker"), "http://localhost:9000", "tok123"))
 	assert.Equal(t, "http://localhost:9000", env["CSB_HOST_EXEC_URL"])
 	assert.Equal(t, "tok123", env["CSB_HOST_EXEC_TOKEN"])
 }
@@ -564,7 +573,7 @@ func TestResolveEnv_BrokerOnlyURLNoToken(t *testing.T) {
 	cfg.Runtime = "docker"
 	cfg.DefaultShell = "bash"
 
-	env := envMap(ResolveEnv(cfg, "http://localhost:9000", ""))
+	env := envMap(ResolveEnv(cfg, NewRuntime("docker"), "http://localhost:9000", ""))
 	_, hasURL := env["CSB_HOST_EXEC_URL"]
 	assert.False(t, hasURL)
 }
