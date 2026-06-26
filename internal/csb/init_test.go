@@ -26,7 +26,7 @@ func TestInitConfigDir_CreatesDefaults(t *testing.T) {
 		},
 	}
 
-	InitConfigDir(dir, memFS)
+	InitConfigDir(dir, testDockerfile, memFS)
 
 	for _, rel := range []string{"config.yaml", "Dockerfile", "addons/mise/install.sh"} {
 		_, err := os.Stat(filepath.Join(dir, rel))

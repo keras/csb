@@ -281,7 +281,7 @@ func RunRun(cfg *Config, rt *Runtime, assets Assets) error {
 	logInfo("config dir", "path", cfg.ConfigDir, "runtime", cfg.ContainerCLI())
 
 	// Verbose nudge when shipped resources have drifted from this binary.
-	if embedded, err := managedEmbeddedFiles(assets.AddonsFS); err == nil {
+	if embedded, err := managedEmbeddedFiles(assets.Dockerfile, assets.AddonsFS); err == nil {
 		if n := pendingUpdateCount(cfg.ConfigDir, embedded); n > 0 {
 			logInfo("shipped resources", "differ", n, "hint", "csb config status")
 		}

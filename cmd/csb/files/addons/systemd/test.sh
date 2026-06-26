@@ -15,3 +15,13 @@ test -f /etc/systemd/system.conf.d/csb-container.conf
 # Console/serial gettys are masked so they can't grab the user's pty.
 test "$(readlink /etc/systemd/system/getty.target)" = /dev/null
 test "$(readlink /etc/systemd/system/console-getty.service)" = /dev/null
+
+# The interactive session enters through login(1), and pam_systemd must be in the
+# PAM session stack so logind registers a real session (XDG_RUNTIME_DIR, etc.).
+command -v login >/dev/null
+find /lib /usr/lib -name pam_systemd.so | grep -q .
+# pam_systemd is wired into the stack /etc/pam.d/login pulls in (common-session).
+grep -rq pam_systemd.so /etc/pam.d/
+
+# The launcher routes the bare login shell through login(1).
+grep -q 'login -p -f sandbox' /etc/csb/entrypoint.d/systemd.sh

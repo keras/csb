@@ -16,82 +16,11 @@ import (
 	"github.com/ulikunitz/xz"
 )
 
-// parseAddonRunArgs scans enabled addon scripts for "# csb:run-arg" directives
-// and returns deduplicated tokens to append to the container run command.
-func parseAddonRunArgs(scripts []string) ([]string, error) {
-	seen := make(map[string]bool)
-	var result []string
-	for _, path := range scripts {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("reading addon %s: %w", path, err)
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			val, ok := strings.CutPrefix(line, "# csb:run-arg ")
-			if !ok {
-				continue
-			}
-			val = strings.TrimSpace(val)
-			if val == "" || seen[val] {
-				continue
-			}
-			seen[val] = true
-			result = append(result, strings.Fields(val)...)
-		}
-	}
-	return result, nil
-}
-
-// dockerfile is the default image recipe — seeded into <ConfigDir>/Dockerfile
-// on first run and read from there for every build, so users can edit it.
-// Per-build variation otherwise comes from the build context (addons,
-// persist script, entrypoint, host-run binary).
-const dockerfile = `FROM debian:stable-slim
-
-RUN apt-get update && apt-get install -y \
-    bash-completion gosu libnss-wrapper tmux \
-    && rm -rf /var/lib/apt/lists/*
-
-# Shell setup
-RUN printf '\n[ -f /usr/share/bash-completion/bash_completion ] && . /usr/share/bash-completion/bash_completion\n' \
-    >> /etc/bash.bashrc
-
-RUN mkdir -p /etc/csb/entrypoint.d /etc/csb/help.d
-
-COPY csb/addon.d /tmp/addon.d
-RUN /tmp/addon.d/run.sh
-
-ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 CSB_HOME=/home/sandbox
-
-RUN mkdir -p $CSB_HOME /workspace && chmod 777 /workspace
-
-COPY csb/csb-persist /usr/local/bin/csb-persist
-RUN chmod +x /usr/local/bin/csb-persist
-
-COPY csb/csb-help /usr/local/bin/csb-help
-RUN chmod +x /usr/local/bin/csb-help
-
-# MOTD: print the orientation box on interactive login shells only, so it
-# never pollutes "csb -- cmd" output. Disable with CSB_MOTD=0.
-# A marker in /tmp suppresses repeat display within the same container session.
-RUN printf '%s\n' \
-    'case $- in *i*) ;; *) return 0 ;; esac' \
-    '[ -t 1 ] || return 0' \
-    '[ "${CSB_MOTD:-1}" = 0 ] && return 0' \
-    '[ -f /tmp/.csb-motd-shown ] && return 0' \
-    'touch /tmp/.csb-motd-shown' \
-    'command -v csb-help >/dev/null 2>&1 && csb-help' \
-    > /etc/profile.d/csb-motd.sh
-
-COPY csb/csb-host-run /usr/local/bin/csb-host-run
-
-# Entrypoint
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["bash", "-l"]
-`
+// The default image recipe lives in cmd/csb/files/Dockerfile, embedded into the
+// binary and carried as Assets.Dockerfile. It is seeded into <ConfigDir>/Dockerfile
+// on first run and read from there for every build, so users can edit it; per-build
+// variation otherwise comes from the build context (addons, persist script,
+// entrypoint, host-run binary).
 
 // decompressXZ decompresses an xz-compressed byte slice.
 func decompressXZ(compressed []byte) ([]byte, error) {
@@ -477,6 +406,26 @@ func ResolveEnv(cfg *Config, rt *Runtime, brokerURL, brokerToken string) [][2]st
 	env = append(env, [2]string{"HOME", ContainerHome})
 	env = append(env, [2]string{"CSB_DEFAULT_SHELL", cfg.DefaultShell})
 
+	// CSB_LOGIN_SHELL marks the bare interactive shape: no explicit command (the
+	// else-branch of resolveContainerCmd, with or without tmux). The systemd
+	// launcher reads this to route that session through login(1)/PAM so it becomes
+	// a real logind session; an explicit command keeps the lightweight gosu drop.
+	// With tmux, login runs a login shell rather than the tmux command, so tmux is
+	// started from within the login session (see CSB_TMUX / csb-tmux.sh) — that
+	// keeps the tmux server inside the logind session. Harmless when the systemd
+	// addon is absent (nothing reads it).
+	if len(cfg.PassthroughArgs) == 0 && len(cfg.DefaultCmd) == 0 {
+		env = append(env, [2]string{"CSB_LOGIN_SHELL", "1"})
+	}
+
+	// CSB_TMUX tells the login session to auto-start tmux (csb-tmux.sh). Set
+	// whenever tmux is requested; the snippet is guarded so it only fires for the
+	// interactive login shell that is not already inside tmux — i.e. the systemd
+	// login session, not the tmux windows of the default (non-systemd) path.
+	if cfg.UseTmux {
+		env = append(env, [2]string{"CSB_TMUX", "1"})
+	}
+
 	term := os.Getenv("TERM")
 	if term == "" {
 		term = "xterm-256color"
@@ -643,8 +592,11 @@ func BuildRunCommand(cfg *Config, mounts []Mount, env [][2]string, imageName str
 		cmd = append(cmd, "--label", k+"="+labels[k])
 	}
 
-	// Addon run args (from # csb:run-arg directives in enabled addon scripts)
-	addonArgs, err := parseAddonRunArgs(addonPaths(addonInstances(cfg)))
+	// Addon run args (from # csb:run-arg directives in enabled addon scripts).
+	// facts are what conditional directives ("# csb:run-arg[runtime=podman] ...")
+	// match against.
+	facts := map[string]string{"runtime": cfg.ContainerCLI(), "arch": cfg.Arch}
+	addonArgs, err := parseAddonRunArgs(addonPaths(addonInstances(cfg)), facts)
 	if err != nil {
 		return nil, err
 	}

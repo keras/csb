@@ -52,9 +52,9 @@ const embedAddonsRoot = "files/addons"
 // and tracks for drift, keyed by their path relative to <ConfigDir>. This is the
 // single source of truth shared by InitConfigDir (seeding) and the sync commands
 // (drift detection). test.sh is a dev artifact and is not shipped.
-func managedEmbeddedFiles(addonsFS fs.FS) (map[string][]byte, error) {
+func managedEmbeddedFiles(dockerfile []byte, addonsFS fs.FS) (map[string][]byte, error) {
 	out := map[string][]byte{
-		"Dockerfile": []byte(dockerfile),
+		"Dockerfile": dockerfile,
 	}
 	err := fs.WalkDir(addonsFS, embedAddonsRoot, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -168,7 +168,7 @@ func applySyncEntry(configDir, relPath string, content []byte) error {
 
 // RunConfigStatus prints a table of managed resources and their drift state.
 func RunConfigStatus(cfg *Config, assets Assets) error {
-	embedded, err := managedEmbeddedFiles(assets.AddonsFS)
+	embedded, err := managedEmbeddedFiles(assets.Dockerfile, assets.AddonsFS)
 	if err != nil {
 		return fmt.Errorf("enumerating shipped resources: %w", err)
 	}
@@ -204,7 +204,7 @@ func RunConfigStatus(cfg *Config, assets Assets) error {
 // pre-checked; differing files start unchecked and are flagged, since updating
 // them replaces a local copy (backed up to <file>.bak).
 func RunConfigUpdate(cfg *Config, assets Assets) error {
-	embedded, err := managedEmbeddedFiles(assets.AddonsFS)
+	embedded, err := managedEmbeddedFiles(assets.Dockerfile, assets.AddonsFS)
 	if err != nil {
 		return fmt.Errorf("enumerating shipped resources: %w", err)
 	}

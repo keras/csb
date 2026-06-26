@@ -4,6 +4,13 @@ systemd — run systemd as PID 1 (boot mode)
   normally; it runs as a session alongside systemd, which supervises any
   services that other addons register.
 
+  The interactive shell is a real logind session (it is entered through
+  login(1)), so XDG_RUNTIME_DIR is set, a per-user `systemd --user` manager
+  runs, and `loginctl` lists the session. This includes tmux mode — tmux is
+  started inside the login session, so its server is part of the session too.
+  Only non-interactive runs (csb -- cmd) keep the lightweight path and are not
+  logind sessions.
+
   Other addons can depend on this one by shipping unit files:
 
     cat > /etc/systemd/system/myservice.service <<UNIT

@@ -56,7 +56,7 @@ func renderConfigTemplate() string {
 // those are materialized into <configDir>/addons/<name>/<file>. The Dockerfile and addon
 // install scripts come from managedEmbeddedFiles, which the sync commands also use so that
 // seeding and drift detection always agree on the managed set.
-func InitConfigDir(configDir string, addonsFS fs.FS) {
+func InitConfigDir(configDir string, dockerfile []byte, addonsFS fs.FS) {
 	if _, err := os.Stat(configDir); os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "Initialising default config at %s …\n", configDir)
 	}
@@ -93,7 +93,7 @@ func InitConfigDir(configDir string, addonsFS fs.FS) {
 	mkDir("home")
 
 	// Dockerfile + addon install scripts, from the shared managed set.
-	managed, err := managedEmbeddedFiles(addonsFS)
+	managed, err := managedEmbeddedFiles(dockerfile, addonsFS)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "csb: warning: failed to enumerate shipped resources: %v\n", err)
 		return

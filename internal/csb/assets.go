@@ -4,6 +4,7 @@ import "io/fs"
 
 // Assets holds the resources embedded into the binary at build time.
 type Assets struct {
+	Dockerfile []byte // Dockerfile (default image recipe)
 	Entrypoint []byte // entrypoint.sh
 	Persist    []byte // csb-persist.sh
 	Help       []byte // csb-help.sh

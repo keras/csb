@@ -16,6 +16,9 @@ import (
 	"github.com/keras/csb/internal/csb"
 )
 
+//go:embed files/Dockerfile
+var dockerfile []byte
+
 //go:embed files/entrypoint.sh
 var entrypointSH []byte
 
@@ -44,6 +47,7 @@ func main() {
 	}
 
 	assets := csb.Assets{
+		Dockerfile: dockerfile,
 		Entrypoint: entrypointSH,
 		Persist:    csbPersistSH,
 		Help:       csbHelpSH,
@@ -52,7 +56,7 @@ func main() {
 	}
 
 	csb.InitLogger(cfg.Verbose)
-	csb.InitConfigDir(cfg.ConfigDir, assets.AddonsFS)
+	csb.InitConfigDir(cfg.ConfigDir, assets.Dockerfile, assets.AddonsFS)
 
 	rt := csb.NewRuntime(cfg.ContainerCLI())
 

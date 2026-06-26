@@ -17,12 +17,16 @@ func testAddonsFS() fstest.MapFS {
 	}
 }
 
+// testDockerfile stands in for the embedded Dockerfile (Assets.Dockerfile) in
+// tests that exercise the managed-file seeding/drift logic.
+var testDockerfile = []byte("FROM debian:test\n")
+
 // ── managedEmbeddedFiles ─────────────────────────────────────────────────────
 
 func TestManagedEmbeddedFiles(t *testing.T) {
-	m, err := managedEmbeddedFiles(testAddonsFS())
+	m, err := managedEmbeddedFiles(testDockerfile, testAddonsFS())
 	require.NoError(t, err)
-	assert.Equal(t, []byte(dockerfile), m["Dockerfile"])
+	assert.Equal(t, testDockerfile, m["Dockerfile"])
 	assert.Equal(t, []byte("echo mise\n"), m["addons/mise/install.sh"])
 	_, hasTest := m["addons/mise/test.sh"]
 	assert.False(t, hasTest, "test.sh must not be in the managed set")
@@ -41,7 +45,7 @@ func stateOf(statuses []fileStatus, path string) syncState {
 
 func TestComputeSyncStatus_States(t *testing.T) {
 	dir := t.TempDir()
-	embedded, err := managedEmbeddedFiles(testAddonsFS())
+	embedded, err := managedEmbeddedFiles(testDockerfile, testAddonsFS())
 	require.NoError(t, err)
 
 	// Dockerfile: missing (not written). addon: up to date. plus a local-only addon.
@@ -63,7 +67,7 @@ func TestComputeSyncStatus_States(t *testing.T) {
 
 func TestPendingUpdateCount(t *testing.T) {
 	dir := t.TempDir()
-	embedded, err := managedEmbeddedFiles(testAddonsFS())
+	embedded, err := managedEmbeddedFiles(testDockerfile, testAddonsFS())
 	require.NoError(t, err)
 	// Nothing on disk: Dockerfile + 1 addon both missing → 2.
 	assert.Equal(t, 2, pendingUpdateCount(dir, embedded))
@@ -71,7 +75,7 @@ func TestPendingUpdateCount(t *testing.T) {
 
 func TestPendingUpdateCount_ExcludesLocalOnly(t *testing.T) {
 	dir := t.TempDir()
-	embedded, err := managedEmbeddedFiles(testAddonsFS())
+	embedded, err := managedEmbeddedFiles(testDockerfile, testAddonsFS())
 	require.NoError(t, err)
 
 	// Write a local-only addon that is not in the embedded set.

@@ -13,6 +13,14 @@
 # tuned for a cgroup v2 host with a reasonably modern Docker/Podman; sharing the
 # host cgroup namespace + a writable cgroup mount is the broadly-compatible
 # recipe. Some hosts may still require --privileged — see help.d/systemd.
+#
+# --pid=private forces the container its own PID namespace so the exec'd systemd
+# is actually PID 1. podman running inside another container (nested) can default
+# to sharing the host's PID namespace, which leaves systemd a non-PID-1 process
+# that aborts with "Explicit --user argument required to run as user manager."
+# Conditional on podman: docker has no "private" token (its default is already a
+# private namespace) and rejects it with "--pid: invalid PID mode".
+# csb:run-arg[runtime=podman] --pid=private
 # csb:run-arg --cgroupns=host
 # csb:run-arg -v /sys/fs/cgroup:/sys/fs/cgroup:rw
 # csb:run-arg --tmpfs /run
@@ -22,8 +30,13 @@
 set -euo pipefail
 
 # systemd-sysv provides /sbin/init and the shutdown/poweroff helpers; dbus is
-# needed by logind and anything desktop-flavoured layered on top.
-apt-get install -y --no-install-recommends systemd systemd-sysv dbus
+# needed by logind and anything desktop-flavoured layered on top. libpam-systemd
+# provides pam_systemd.so and, via its postinst, wires it into the PAM
+# common-session stack — so the interactive shell, which the launcher enters
+# through login(1), registers a real logind session (XDG_RUNTIME_DIR, per-user
+# `systemd --user`, loginctl). Without it login still works but logind never
+# sees the session, defeating the whole point of booting systemd.
+apt-get install -y --no-install-recommends systemd systemd-sysv dbus libpam-systemd
 
 # Mask units that are pointless or actively harmful in a container: the console
 # and serial gettys would fight the user session for the pty; the udev/modules

@@ -40,58 +40,6 @@ func TestParseAddonSpec_WhitespaceOnly(t *testing.T) {
 	assert.Nil(t, args)
 }
 
-// ── parseAddonRunArgs ────────────────────────────────────────────────────────
-
-func TestParseAddonRunArgs_Basic(t *testing.T) {
-	dir := t.TempDir()
-	f := filepath.Join(dir, "install.sh")
-	require.NoError(t, os.WriteFile(f, []byte("#!/bin/bash\n# csb:run-arg --device /dev/fuse\n"), 0644))
-
-	got, err := parseAddonRunArgs([]string{f})
-	require.NoError(t, err)
-	assert.Equal(t, []string{"--device", "/dev/fuse"}, got)
-}
-
-func TestParseAddonRunArgs_Dedup(t *testing.T) {
-	dir := t.TempDir()
-	f1 := filepath.Join(dir, "a.sh")
-	f2 := filepath.Join(dir, "b.sh")
-	require.NoError(t, os.WriteFile(f1, []byte("# csb:run-arg --cap-add SYS_ADMIN\n"), 0644))
-	require.NoError(t, os.WriteFile(f2, []byte("# csb:run-arg --cap-add SYS_ADMIN\n"), 0644))
-
-	got, err := parseAddonRunArgs([]string{f1, f2})
-	require.NoError(t, err)
-	// "--cap-add SYS_ADMIN" is a single directive; tokens are --cap-add and SYS_ADMIN
-	// but the dedup key is the raw val "--cap-add SYS_ADMIN", so tokens appear once
-	assert.Equal(t, []string{"--cap-add", "SYS_ADMIN"}, got)
-}
-
-func TestParseAddonRunArgs_MultipleDirectives(t *testing.T) {
-	dir := t.TempDir()
-	f := filepath.Join(dir, "install.sh")
-	content := "# csb:run-arg --device /dev/dri\n# csb:run-arg --group-add video\n"
-	require.NoError(t, os.WriteFile(f, []byte(content), 0644))
-
-	got, err := parseAddonRunArgs([]string{f})
-	require.NoError(t, err)
-	assert.Equal(t, []string{"--device", "/dev/dri", "--group-add", "video"}, got)
-}
-
-func TestParseAddonRunArgs_NoDirectives(t *testing.T) {
-	dir := t.TempDir()
-	f := filepath.Join(dir, "install.sh")
-	require.NoError(t, os.WriteFile(f, []byte("#!/bin/bash\napt-get install -y foo\n"), 0644))
-
-	got, err := parseAddonRunArgs([]string{f})
-	require.NoError(t, err)
-	assert.Empty(t, got)
-}
-
-func TestParseAddonRunArgs_MissingFile(t *testing.T) {
-	_, err := parseAddonRunArgs([]string{"/no/such/file.sh"})
-	assert.Error(t, err)
-}
-
 // ── addonInstances ───────────────────────────────────────────────────────────
 
 func makeAddonDir(t *testing.T, configDir, name string) {
@@ -493,6 +441,49 @@ func TestResolveEnv_HostUIDGID(t *testing.T) {
 	env := envMap(ResolveEnv(cfg, NewRuntime("docker"), "", ""))
 	assert.NotEmpty(t, env["HOST_UID"])
 	assert.NotEmpty(t, env["HOST_GID"])
+}
+
+// CSB_LOGIN_SHELL is set for the bare interactive shape (no explicit command),
+// with or without tmux — the case the systemd launcher routes through login(1).
+// An explicit command must leave it unset so that path keeps the gosu drop.
+// CSB_TMUX is set whenever tmux is requested, so the login session can auto-start
+// tmux inside itself.
+func TestResolveEnv_LoginShell(t *testing.T) {
+	base := func() *Config {
+		cfg := &Config{ConfigDir: t.TempDir()}
+		cfg.Runtime = "docker"
+		cfg.DefaultShell = "bash"
+		return cfg
+	}
+
+	env := envMap(ResolveEnv(base(), NewRuntime("docker"), "", ""))
+	assert.Equal(t, "1", env["CSB_LOGIN_SHELL"])
+	assert.NotContains(t, env, "CSB_TMUX")
+
+	// Bare interactive + tmux: still a login session, plus the tmux marker.
+	cfg := base()
+	cfg.UseTmux = true
+	env = envMap(ResolveEnv(cfg, NewRuntime("docker"), "", ""))
+	assert.Equal(t, "1", env["CSB_LOGIN_SHELL"])
+	assert.Equal(t, "1", env["CSB_TMUX"])
+
+	// Explicit command: no login session (gosu path), regardless of tmux.
+	cfg = base()
+	cfg.PassthroughArgs = []string{"htop"}
+	env = envMap(ResolveEnv(cfg, NewRuntime("docker"), "", ""))
+	assert.NotContains(t, env, "CSB_LOGIN_SHELL")
+
+	cfg = base()
+	cfg.DefaultCmd = []string{"htop"}
+	env = envMap(ResolveEnv(cfg, NewRuntime("docker"), "", ""))
+	assert.NotContains(t, env, "CSB_LOGIN_SHELL")
+
+	cfg = base()
+	cfg.PassthroughArgs = []string{"htop"}
+	cfg.UseTmux = true
+	env = envMap(ResolveEnv(cfg, NewRuntime("docker"), "", ""))
+	assert.NotContains(t, env, "CSB_LOGIN_SHELL")
+	assert.Equal(t, "1", env["CSB_TMUX"])
 }
 
 // Docker (and rootful podman) pass the caller's real uid/gid through; only
