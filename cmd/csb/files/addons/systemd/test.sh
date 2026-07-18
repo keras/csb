@@ -36,8 +36,13 @@ esac
 systemctl -q is-active dbus.service
 systemctl -q is-active systemd-logind.service
 
-# The journal is live (csb-container.conf routes logs there).
+# The journal is live.
 systemctl -q is-active systemd-journald.service
+
+# csb-log-target.service flipped PID 1's logging from the boot-time null
+# target (which keeps pre-journald messages off the user's pty) to the journal
+# for the running system. See launcher.sh / log-target.service.
+test "$(systemctl log-target)" = journal
 
 # The build-time masks held: no getty is up to fight the user session for the pty.
 ! systemctl -q is-active console-getty.service
@@ -76,3 +81,8 @@ grep -rq pam_systemd.so /etc/pam.d/
 
 # The launcher routes the bare login shell through login(1).
 grep -q 'login -p -f sandbox' /etc/csb/entrypoint.d/systemd.sh
+
+# The workdir handoff across login(1) is wired up on both ends: the launcher
+# exports CSB_LOGIN_CWD and the profile.d snippet consumes it.
+grep -q 'CSB_LOGIN_CWD' /etc/csb/entrypoint.d/systemd.sh
+test -f /etc/profile.d/csb-login-cwd.sh

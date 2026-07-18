@@ -63,9 +63,16 @@ done
 # files next to this install.sh; install -D creates parent dirs as needed.
 #
 # csb-container.conf tunes systemd for headless container use (quiet console,
-# logs to the journal, bounded job timeouts). launcher.sh overrides csb_launch
-# so systemd runs as PID 1 — the entrypoint stays init-agnostic and just sources
-# this hook from entrypoint.d (0755 so it is sourced).
-install -D -m 0644 csb-container.conf /etc/systemd/system.conf.d/csb-container.conf
-install -D -m 0755 launcher.sh        /etc/csb/entrypoint.d/systemd.sh
-install -D -m 0644 help               /etc/csb/help.d/systemd
+# bounded job timeouts). launcher.sh overrides csb_launch so systemd runs as
+# PID 1 — the entrypoint stays init-agnostic and just sources this hook from
+# entrypoint.d (0755 so it is sourced). log-target.service keeps systemd's own
+# logging on the journal exactly while journald is available (see the comments
+# in that unit and in launcher.sh); the wants-symlink enables it at build time,
+# same offline mechanism as the masking above.
+install -D -m 0644 csb-container.conf  /etc/systemd/system.conf.d/csb-container.conf
+install -D -m 0755 launcher.sh         /etc/csb/entrypoint.d/systemd.sh
+install -D -m 0644 help                /etc/csb/help.d/systemd
+install -D -m 0644 login-cwd.sh        /etc/profile.d/csb-login-cwd.sh
+install -D -m 0644 log-target.service  /etc/systemd/system/csb-log-target.service
+mkdir -p /etc/systemd/system/sysinit.target.wants
+ln -sf ../csb-log-target.service /etc/systemd/system/sysinit.target.wants/csb-log-target.service

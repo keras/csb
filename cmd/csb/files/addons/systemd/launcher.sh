@@ -71,6 +71,11 @@ csb_launch() {
     fi
 
     if [ "${CSB_LOGIN_SHELL:-}" = 1 ] && [ -t "$tin" ]; then
+        # Carry the container workdir (`-w /workspace`) across login(1), which
+        # chdir()s to $HOME before exec'ing the shell. login -p preserves the
+        # environment, and /etc/profile.d/csb-login-cwd.sh (installed by this
+        # addon) jumps back once and unsets the variable.
+        export CSB_LOGIN_CWD="$PWD"
         # Interactive login shell. login(1) must be the *session leader* and the
         # terminal's foreground process group: it drives the tty (TIOCSCTTY,
         # termios, vhangup) directly, and if it runs in a background process group
@@ -121,7 +126,19 @@ csb_launch() {
     # Hand the pty entirely to the session, then become PID 1 on /dev/null.
     # --show-status=no keeps systemd's boot status off /dev/console (the pty);
     # ShowStatus=no in system.conf is the authoritative knob, this is a backstop.
+    #
+    # SYSTEMD_LOG_TARGET=null: whenever the journal is unreachable — before
+    # journald is up (the version banner, "Detected virtualization ...",
+    # "Queued start job ...") and again during late shutdown ("Sending SIGTERM
+    # to remaining processes ...") — systemd's logging falls back to
+    # /dev/console, which under `-t` is the user's pty. A container has no
+    # writable /dev/kmsg to absorb the fallback, and no CAP_SYS_ADMIN to divert
+    # the console node, so instead PID 1 boots with its logging off entirely
+    # and log-target.service flips it to the journal for exactly the window
+    # journald is alive. Must be the environment variable: it is read before
+    # argv parsing (a --log-target flag misses the banner), and it survives
+    # system.conf parsing (env wins over config for PID 1's log settings).
     exec {tin}<&- {tout}>&- {terr}>&-
     exec </dev/null >/dev/null 2>&1
-    exec /lib/systemd/systemd --show-status=no
+    exec env SYSTEMD_LOG_TARGET=null /lib/systemd/systemd --show-status=no
 }

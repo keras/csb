@@ -46,7 +46,7 @@ import (
 // probeCmd is typed into the interactive shell. It records the session shape
 // and atomically publishes it to /mnt/csb-home for the host side to read.
 // Single line (typed via pty), double quotes only where expansion is wanted.
-const probeCmd = `{ echo "xdg=${XDG_RUNTIME_DIR:-}"; echo "tmux=${TMUX:-}"; echo "path=$PATH"; echo "sessions=$(loginctl --no-legend list-sessions 2>/dev/null | wc -l)"; sid=$(loginctl --no-legend list-sessions 2>/dev/null | awk '{print $1; exit}'); echo "--- session-status ---"; loginctl session-status "$sid" 2>&1; } > /mnt/csb-home/.probe.tmp 2>&1; mv /mnt/csb-home/.probe.tmp /mnt/csb-home/probe.txt`
+const probeCmd = `{ echo "xdg=${XDG_RUNTIME_DIR:-}"; echo "tmux=${TMUX:-}"; echo "path=$PATH"; echo "pwd=$(pwd)"; echo "sessions=$(loginctl --no-legend list-sessions 2>/dev/null | wc -l)"; sid=$(loginctl --no-legend list-sessions 2>/dev/null | awk '{print $1; exit}'); echo "--- session-status ---"; loginctl session-status "$sid" 2>&1; } > /mnt/csb-home/.probe.tmp 2>&1; mv /mnt/csb-home/.probe.tmp /mnt/csb-home/probe.txt`
 
 // systemdSession drives an interactive `csb --addon systemd` under a pty.
 type systemdSession struct {
@@ -239,6 +239,13 @@ func TestSystemdInteractiveLoginSession(t *testing.T) {
 	if n := probeField(t, probe, "sessions"); n == "0" {
 		t.Errorf("no logind session registered\n%s", probe)
 	}
+	// csb runs the container with `-w /workspace` and the shell must open
+	// there, exactly like the non-systemd (gosu) interactive path does.
+	// login(1) chdir()s to the user's home, so the launcher has to restore
+	// the workdir afterwards.
+	if p := probeField(t, probe, "pwd"); p != "/workspace" {
+		t.Errorf("interactive shell cwd = %q, want /workspace (the container workdir)\n%s", p, probe)
+	}
 
 	// `exit 7` still yields container exit 0: login(1) swallows the shell's
 	// status. This assertion documents that shape — if it starts failing,
@@ -246,6 +253,21 @@ func TestSystemdInteractiveLoginSession(t *testing.T) {
 	s.sendLine("exit 7")
 	if code := s.waitExit(2 * time.Minute); code != 0 {
 		t.Errorf("exit code = %d, want 0 (login(1) exits 0 regardless of shell status)\n--- terminal ---\n%s", code, s.terminal())
+	}
+
+	// systemd's early-boot output and systemd-shutdown's teardown messages
+	// must not reach the pty: PID 1 boots with SYSTEMD_LOG_TARGET=null and
+	// csb-log-target.service confines its logging to the journal's lifetime,
+	// so the console fallback (= this pty) never fires.
+	for _, noise := range []string{
+		"running in system mode",
+		"Detected virtualization",
+		"Queued start job",
+		"Sending SIGTERM to remaining processes",
+	} {
+		if strings.Contains(s.terminal(), noise) {
+			t.Errorf("systemd log output %q leaked to the interactive pty\n--- terminal ---\n%s", noise, s.terminal())
+		}
 	}
 }
 
@@ -270,6 +292,12 @@ func TestSystemdInteractiveTmux(t *testing.T) {
 	// The session-status process tree must contain the tmux server.
 	if _, status, ok := strings.Cut(probe, "--- session-status ---"); !ok || !strings.Contains(status, "tmux") {
 		t.Errorf("tmux server not inside the logind session\n%s", probe)
+	}
+	// The tmux window shell must open in the container workdir, like the
+	// non-systemd tmux path does (login(1) chdir()s to home; the workdir has
+	// to be restored before tmux starts so the server inherits it).
+	if p := probeField(t, probe, "pwd"); p != "/workspace" {
+		t.Errorf("tmux shell cwd = %q, want /workspace (the container workdir)\n%s", p, probe)
 	}
 
 	// Exiting the (only) tmux window ends the server, which ends the exec'd

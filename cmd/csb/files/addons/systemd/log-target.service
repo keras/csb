@@ -1,0 +1,26 @@
+# Route systemd's own logging to the journal exactly while journald is
+# available. The launcher boots PID 1 with SYSTEMD_LOG_TARGET=null because at
+# the edges of the container's life the journal is unreachable and systemd's
+# logging then falls back to /dev/console — the user's pty under `-t` (there is
+# no writable /dev/kmsg in a container to absorb it). This unit flips the
+# target to the journal once journald's socket exists, and back to null on the
+# way down (stop ordering is the reverse of After=, so ExecStop runs while
+# journald is still alive), which also keeps systemd-shutdown's teardown
+# messages ("Sending SIGTERM to remaining processes ...") off the pty. Nothing
+# is lost versus a plain LogTarget=journal: messages logged while the journal
+# is down never reached it anyway — they only leaked to the console.
+[Unit]
+Description=Route systemd logging to the journal while journald is available
+DefaultDependencies=no
+After=systemd-journald.socket
+Conflicts=shutdown.target
+Before=shutdown.target sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/systemctl log-target journal
+ExecStop=/usr/bin/systemctl log-target null
+
+[Install]
+WantedBy=sysinit.target
