@@ -46,8 +46,9 @@ test:
 # Black-box addon tests: for each cmd/csb/files/addons/<name>/test.sh,
 # launches a container with that addon enabled and runs the script inside.
 # Requires Docker or Podman. Slow; run on demand.
+# Filter with RUN=<regexp>, e.g. `make test-addons RUN=TestSystemd`.
 test-addons: $(CSB_CLI)
-	go test -tags addons -count=1 ./internal/addons/...
+	go test -tags addons -count=1 -timeout 30m $(if $(RUN),-run '$(RUN)') ./internal/addons/...
 
 # ---------------------------------------------------------------------------
 # Clean

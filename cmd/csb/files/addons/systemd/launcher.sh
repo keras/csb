@@ -4,7 +4,9 @@
 # user session *first* so it inherits the pty Docker wired to our stdio, then
 # exec systemd with its stdio on /dev/null so the two never contend for the
 # terminal. When the session exits it asks PID 1 to exit, stopping the container
-# (and `--rm` reaps it).
+# (and `--rm` reaps it). The session's exit code becomes the container exit code
+# on the non-interactive branch; the interactive branch always reports 0,
+# because util-linux login(1) exits 0 regardless of the shell's status.
 #
 # The forked session enters one of two ways:
 #
@@ -41,10 +43,10 @@
 _csb_stop_container() {
     local rc=$1 _
     for _ in $(seq 1 300); do
-        systemctl exit "$rc" 2>/dev/null && return
+        systemctl exit "$rc" >/dev/null 2>&1 && return
         sleep 0.1
     done
-    systemctl poweroff 2>/dev/null || true
+    systemctl poweroff >/dev/null 2>&1 || true
 }
 export -f _csb_stop_container
 
@@ -75,18 +77,36 @@ csb_launch() {
         # the kernel hits it with SIGTTOU and stops it (T state) before it ever
         # spawns the shell — the session just hangs. Running it under the wrapper
         # bash (as for the gosu path) is exactly that broken shape. So launch
-        # login *as* the session leader with `setsid -w`: it forks login into a
-        # new session (with the pty as ctty via --ctty), making login the
-        # foreground group, and waits so we can stop the container when the
-        # session ends.
+        # login *as* the session leader with `setsid -w`: it runs login in a new
+        # session, making login the foreground group, and waits so we can stop
+        # the container when the session ends.
         {
-            # Wait (bounded ~10s) for logind so the session can register; if it
+            # systemd calls release_terminal() (TIOCNOTTY) in its early boot,
+            # which sends SIGHUP to the foreground process group (pgrp 1). This
+            # fork lives in pgrp 1 because bash doesn't create a new pgrp for &
+            # jobs in non-interactive mode. SIG_IGN is inherited across exec(), so
+            # sleep/timeout/login children also ignore the SIGHUP, and login's own
+            # vhangup() SIGHUP (sent to login's new session's foreground pgrp) is
+            # harmless too — login inherits SIG_IGN and simply continues to exec
+            # the shell.
+            trap '' HUP
+            # Wait (bounded ~30s) for logind so the session can register; if it
             # never comes up we still log in, just without a tracked session.
-            for _ in $(seq 1 100); do
-                systemctl -q is-active systemd-logind.service 2>/dev/null && break
+            # On Docker Desktop on macOS, systemd boots slower (large image +
+            # VirtioFS) than on native Linux, so 10 s was not always enough.
+            # Each systemctl call is capped at 0.5 s: if the D-Bus socket exists
+            # but the daemon is still initializing, a bare `systemctl is-active`
+            # can block for the full D-Bus method timeout (90 s by default).
+            for _ in $(seq 1 300); do
+                timeout 0.5 systemctl -q is-active systemd-logind.service 2>/dev/null && break
                 sleep 0.1
             done
-            setsid -w "${ctty[@]}" login -p -f sandbox <&"$tin" >&"$tout" 2>&"$terr"
+            # Do NOT pass --ctty here: login acquires the controlling terminal
+            # itself via TIOCSCTTY internally (TIOCNOTTY in systemd's early boot
+            # releases session 1's ctty, so the non-force steal succeeds). login's
+            # vhangup() sends SIGHUP to its own foreground pgrp, but SIG_IGN
+            # inherited above means login ignores it and proceeds to exec the shell.
+            setsid -w login -p -f sandbox <&"$tin" >&"$tout" 2>&"$terr"
             _csb_stop_container "$?"
         } &
     else
