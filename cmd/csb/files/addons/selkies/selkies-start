@@ -73,12 +73,21 @@ export PULSE_SERVER="unix:${_audio_socket}"
 # Helper: run a command as the audio user (root branch) or directly
 # (non-root branch), always with a clean PULSE env + the right runtime
 # and config dirs.
+#
+# DBUS_SESSION_BUS_ADDRESS is scrubbed so our private PulseAudio never touches
+# the user session bus. Under the systemd addon the sandbox user has a
+# `systemd --user` that socket-activates the stock PulseAudio, which already
+# owns the well-known name org.PulseAudio1 on that bus; a second daemon
+# connecting there aborts with "D-Bus name org.PulseAudio1 already taken"
+# ("Daemon startup failed"). Our sink is served over the anonymous unix socket,
+# not the bus, so dropping the bus loses nothing.
 _audio_run() {
     if [ -n "$_audio_user" ]; then
         runuser -u "$_audio_user" -- env -u PULSE_SERVER -u PULSE_RUNTIME_PATH \
+            -u DBUS_SESSION_BUS_ADDRESS \
             XDG_RUNTIME_DIR="$_audio_runtime" XDG_CONFIG_HOME="$_audio_config" "$@"
     else
-        env -u PULSE_SERVER -u PULSE_RUNTIME_PATH \
+        env -u PULSE_SERVER -u PULSE_RUNTIME_PATH -u DBUS_SESSION_BUS_ADDRESS \
             XDG_RUNTIME_DIR="$_audio_runtime" XDG_CONFIG_HOME="$_audio_config" "$@"
     fi
 }
