@@ -15,6 +15,19 @@ import (
 	"nhooyr.io/websocket"
 )
 
+// TTYMode controls whether the host runs the command under a PTY.
+type TTYMode int
+
+const (
+	// TTYAuto requests a PTY only when both stdin and stdout are real terminals,
+	// so piping either side keeps the byte stream exact (no ONLCR translation).
+	TTYAuto TTYMode = iota
+	// TTYForce always requests a PTY (rich CLIs, colored output through a pipe).
+	TTYForce
+	// TTYNever never requests a PTY.
+	TTYNever
+)
+
 // Run connects to the broker, sends cmd+args, wires stdio, and returns the exit code.
 // signals should be a channel receiving os.Signal values (SIGINT, SIGTERM) to forward.
 func Run(
@@ -23,6 +36,7 @@ func Run(
 	signals <-chan os.Signal,
 	stdin io.Reader,
 	stdout, stderr io.Writer,
+	ttyMode TTYMode,
 ) (int, error) {
 	ctx := context.Background()
 
@@ -48,19 +62,36 @@ func Run(
 		return conn.Write(ctx, websocket.MessageText, data)
 	}
 
-	// Detect if stdin is a real terminal and set up TTY mode.
-	var startFrame proto.Frame
+	// Decide whether to request a PTY on the host. stdinFd is the raw-mode /
+	// resize source and is only valid when stdin is a genuine terminal.
 	stdinFd := -1
 	if f, ok := stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
 		stdinFd = int(f.Fd())
 	}
+	stdoutIsTTY := false
+	if f, ok := stdout.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		stdoutIsTTY = true
+	}
 
-	if stdinFd >= 0 {
-		cols, rows, err := term.GetSize(stdinFd)
-		if err != nil || cols == 0 || rows == 0 {
-			cols, rows = 80, 24
+	useTTY := false
+	switch ttyMode {
+	case TTYForce:
+		useTTY = true
+	case TTYNever:
+		useTTY = false
+	default:
+		useTTY = stdinFd >= 0 && stdoutIsTTY
+	}
+
+	var startFrame proto.Frame
+	if useTTY {
+		cols, rows := uint16(80), uint16(24)
+		if stdinFd >= 0 {
+			if c, r, err := term.GetSize(stdinFd); err == nil && c > 0 && r > 0 {
+				cols, rows = uint16(c), uint16(r)
+			}
 		}
-		startFrame = proto.NewStartTTY(cmd, args, uint16(cols), uint16(rows))
+		startFrame = proto.NewStartTTY(cmd, args, cols, rows)
 	} else {
 		startFrame = proto.NewStart(cmd, args)
 	}
@@ -70,7 +101,7 @@ func Run(
 	}
 
 	// Put local terminal in raw mode so the host PTY drives it.
-	if stdinFd >= 0 {
+	if useTTY && stdinFd >= 0 {
 		oldState, err := term.MakeRaw(stdinFd)
 		if err == nil {
 			defer term.Restore(stdinFd, oldState)
@@ -113,7 +144,7 @@ func Run(
 				case syscall.SIGTERM:
 					sendLocked(proto.NewSignal("SIGTERM"))
 				case syscall.SIGWINCH:
-					if stdinFd < 0 {
+					if !useTTY || stdinFd < 0 {
 						continue
 					}
 					cols, rows, err := term.GetSize(stdinFd)
@@ -126,7 +157,7 @@ func Run(
 	}
 
 	// If TTY mode, also watch SIGWINCH independently in case the caller didn't subscribe.
-	if stdinFd >= 0 {
+	if useTTY && stdinFd >= 0 {
 		winchC := make(chan os.Signal, 1)
 		signal.Notify(winchC, syscall.SIGWINCH)
 		go func() {

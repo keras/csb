@@ -97,6 +97,8 @@ echo "hello" | csb-host-run ./cmd ...
 
 `csb-host-run` connects over WebSocket to a host-side broker that csb starts before launching the container (csb runs as its own broker via an internal mode). The broker enforces an allowlist and scrubs the environment before spawning any process — env vars injected into the sandbox (e.g. `GIT_SSH_COMMAND`) are not forwarded to the host process.
 
+A PTY is allocated on the host only when both stdin and stdout are terminals. Pass `-t` to force a PTY (e.g. rich CLIs or colored output through a pipe) or `-T` to never allocate one.
+
 ### Enabling host-exec
 
 Enable per-invocation with `--host-exec` and specify allowed commands with one or more `--host-exec-allow` flags:

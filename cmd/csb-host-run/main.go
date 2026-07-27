@@ -18,18 +18,37 @@ func main() {
 		os.Exit(1)
 	}
 
-	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: csb-host-run <cmd> [args...]")
+	args := os.Args[1:]
+	ttyMode := client.TTYAuto
+parse:
+	for len(args) > 0 {
+		switch args[0] {
+		case "-t":
+			ttyMode = client.TTYForce
+			args = args[1:]
+		case "-T":
+			ttyMode = client.TTYNever
+			args = args[1:]
+		case "--":
+			args = args[1:]
+			break parse
+		default:
+			break parse
+		}
+	}
+
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: csb-host-run [-t|-T] [--] <cmd> [args...]")
 		os.Exit(1)
 	}
 
-	cmd := os.Args[1]
-	args := os.Args[2:]
+	cmd := args[0]
+	cmdArgs := args[1:]
 
 	sigC := make(chan os.Signal, 4)
 	signal.Notify(sigC, syscall.SIGINT, syscall.SIGTERM)
 
-	exitCode, err := client.Run(brokerURL, brokerToken, cmd, args, sigC, os.Stdin, os.Stdout, os.Stderr)
+	exitCode, err := client.Run(brokerURL, brokerToken, cmd, cmdArgs, sigC, os.Stdin, os.Stdout, os.Stderr, ttyMode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "csb-host-run: %v\n", err)
 		os.Exit(1)

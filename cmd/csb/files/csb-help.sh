@@ -153,6 +153,14 @@ stdin/stdout/stderr and the exit code straight through:
     csb-host-run make run
     echo hi | csb-host-run ./cmd
 
+By default a PTY is allocated on the host only when both stdin and
+stdout are terminals — so piping either side stays byte-exact (no
+\n -> \r\n translation). Override with -t (force a PTY, e.g. for
+colored output through a pipe) or -T (never allocate one):
+
+    csb-host-run -t some-rich-cli | tee log
+    csb-host-run -T make run
+
 The host enforces the allowlist and scrubs the environment before
 spawning anything — env vars from the sandbox are not forwarded.
 

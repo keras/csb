@@ -31,7 +31,7 @@ func run(t *testing.T, wsURL, token, cmd string, args []string, stdinData []byte
 	var outBuf, errBuf bytes.Buffer
 	stdinR := bytes.NewReader(stdinData)
 	var err error
-	code, err = client.Run(wsURL, token, cmd, args, nil, stdinR, &outBuf, &errBuf)
+	code, err = client.Run(wsURL, token, cmd, args, nil, stdinR, &outBuf, &errBuf, client.TTYAuto)
 	if err != nil {
 		t.Fatalf("client.Run: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestE2EWrongToken(t *testing.T) {
 	wsURL, _ := setup(t, rules)
 
 	var outBuf, errBuf bytes.Buffer
-	_, err := client.Run(wsURL, "wrong-token", "echo", []string{"hi"}, nil, bytes.NewReader(nil), &outBuf, &errBuf)
+	_, err := client.Run(wsURL, "wrong-token", "echo", []string{"hi"}, nil, bytes.NewReader(nil), &outBuf, &errBuf, client.TTYAuto)
 	if err == nil {
 		t.Error("expected error when connecting with wrong token, got nil")
 	}
