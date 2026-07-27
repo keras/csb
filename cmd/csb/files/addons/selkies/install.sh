@@ -76,6 +76,34 @@ fi
 grep -q 'ice-transport-policy' "$_sp/gstwebrtc_app.py" \
     || { echo "selkies install: failed to patch webrtcbin ice-transport-policy" >&2; exit 1; }
 
+# Speed up (re)connects. selkies' "no peer yet" signalling retry (__main__.py)
+# uses a blocking `time.sleep(2)` *inside an async error handler*, so each retry
+# both waits 2s and stalls the asyncio loop that would otherwise notice the peer
+# registering. The server (peer 0) only emits its WebRTC offer once it pairs
+# with the browser (peer 1); until then the client sits on a black screen. On a
+# reconnect to an already-running selkies the loop churns ~5 cycles (~10s)
+# before the offer goes out, and even a first connect can eat a full 2s cycle
+# depending on timing. Make the retry non-blocking and frequent so pairing lands
+# in well under a second. Both matching lines (video + audio handlers) are the
+# only `time.sleep(2)` in the file. (selkies exposes no setting for this.)
+sed -i 's/^\( *\)time\.sleep(2)/\1await asyncio.sleep(0.25)/' "$_sp/__main__.py"
+grep -q 'import asyncio' "$_sp/__main__.py" \
+    && ! grep -q 'time\.sleep(2)' "$_sp/__main__.py" \
+    && grep -q 'await asyncio\.sleep(0\.25)' "$_sp/__main__.py" \
+    || { echo "selkies install: failed to patch signalling retry sleep" >&2; exit 1; }
+
+# The coturn package ships an *enabled* coturn.service. Under the systemd addon
+# it auto-starts turnserver on 3478 with the stock /etc/turnserver.conf (no
+# realm=csb / selkies:csbturn credentials), stealing the port from selkies-start's
+# own relay — which then can't bind 3478 and dies, leaving the browser with a
+# TURN server that rejects its credentials, so WebRTC media never connects.
+# selkies always runs its OWN turnserver from a generated config, so the packaged
+# service must never run. Mask it offline (symlink to /dev/null): harmless when
+# there is no systemd, authoritative when systemd is PID 1.
+ln -sf /dev/null /etc/systemd/system/coturn.service
+[ "$(readlink /etc/systemd/system/coturn.service)" = /dev/null ] \
+    || { echo "selkies install: failed to mask coturn.service" >&2; exit 1; }
+
 # Selkies' resize.py shells out to `cvt -r` to build the xrandr modeline for
 # each new resolution. That binary ships in the `xcvt` package (installed
 # above); without it the modeline comes back empty, `xrandr --newmode`
