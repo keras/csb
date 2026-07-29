@@ -216,10 +216,11 @@ func (r attemptResult) summary() string {
 
 // selkiesBrowser is a running csb container hosting selkies + headless Chromium.
 type selkiesBrowser struct {
-	cmd     *exec.Cmd
-	logDir  string // host side of the ~/.selkies bind mount
-	out     *syncBuf
-	cdpPort int
+	cmd       *exec.Cmd
+	logDir    string // host side of the ~/.selkies bind mount
+	configDir string // csb --config-dir; also the container's csb.config-dir label
+	out       *syncBuf
+	cdpPort   int
 }
 
 type syncBuf struct {
@@ -237,10 +238,11 @@ func (s *syncBuf) String() string { s.mu.Lock(); defer s.mu.Unlock(); return s.b
 func startSelkiesBrowser(t *testing.T, extraAddons ...string) *selkiesBrowser {
 	t.Helper()
 	logDir := t.TempDir()
+	configDir := t.TempDir()
 	hostPort := cdpPort
 
 	args := []string{
-		"--config-dir", t.TempDir(),
+		"--config-dir", configDir,
 		"--addon", "selkies",
 		"--addon", "packages chromium socat",
 	}
@@ -264,7 +266,7 @@ func startSelkiesBrowser(t *testing.T, extraAddons ...string) *selkiesBrowser {
 		t.Fatalf("start selkies+chromium container: %v", err)
 	}
 
-	sb := &selkiesBrowser{cmd: cmd, logDir: logDir, out: out, cdpPort: hostPort}
+	sb := &selkiesBrowser{cmd: cmd, logDir: logDir, configDir: configDir, out: out, cdpPort: hostPort}
 	t.Cleanup(sb.stop)
 	return sb
 }
@@ -274,6 +276,7 @@ func (sb *selkiesBrowser) stop() {
 		_ = sb.cmd.Process.Kill()
 		_, _ = sb.cmd.Process.Wait()
 	}
+	reapContainer(sb.configDir)
 }
 
 // waitWSURL polls the published DevTools endpoint until Chromium answers, then

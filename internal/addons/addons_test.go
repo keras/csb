@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -19,6 +20,25 @@ var (
 	csbBin   string
 	repoRoot string
 )
+
+// reapContainer force-removes any csb container carrying the given config-dir
+// label. csb execs into `podman run` (syscall.Exec), so when a test SIGKILLs
+// the csb process the container's conmon keeps it — and its published ports
+// (e.g. selkies' coturn on 3478) — alive, and the next test fails to bind. The
+// config-dir label is unique per test, so this reaps exactly that container.
+func reapContainer(configDir string) {
+	cli := "docker"
+	if _, err := exec.LookPath("docker"); err != nil {
+		cli = "podman"
+	}
+	out, err := exec.Command(cli, "ps", "-aq", "--filter", "label=csb.config-dir="+configDir).Output()
+	if err != nil {
+		return
+	}
+	for _, id := range strings.Fields(string(out)) {
+		_ = exec.Command(cli, "rm", "-f", id).Run()
+	}
+}
 
 func TestMain(m *testing.M) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))

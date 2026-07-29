@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
+# Every assertion here is a bare `test`/`grep` with no message, so a failure
+# under `set -e` would otherwise abort with empty output. Report the failing
+# line and the actual init so a flaky nested-podman boot (PID 1 not systemd) is
+# distinguishable from a real regression.
+trap 'rc=$?; echo "test.sh FAILED at line $LINENO (exit $rc); PID 1 comm=$(cat /proc/1/comm 2>/dev/null)" >&2' ERR
+
 # This script is executed via `csb --addon systemd -- bash -c <script>` (see
 # internal/addons/addons_test.go), i.e. the launcher's *non-interactive* branch
 # — so it runs as a child of an actually booted systemd and can assert runtime
@@ -10,8 +16,16 @@ set -euo pipefail
 # --- Boot behavior -----------------------------------------------------------
 
 # systemd is the running init: PID 1 is systemd and its runtime dir exists.
-test -d /run/systemd/system
+# csb_launch forks this command *before* it execs systemd into PID 1 (see
+# launcher.sh), so for the first few ms PID 1's comm is still the entrypoint
+# shell and /run/systemd/system doesn't exist yet. Poll through that exec window
+# rather than racing it — a one-shot check here flakes the whole addon test.
+for _ in $(seq 1 120); do
+    [ "$(cat /proc/1/comm 2>/dev/null)" = systemd ] && [ -d /run/systemd/system ] && break
+    sleep 0.5
+done
 test "$(cat /proc/1/comm)" = systemd
+test -d /run/systemd/system
 
 # The non-interactive command is launched in parallel with the boot, often
 # before the D-Bus system bus is even connectable (unprivileged systemctl talks

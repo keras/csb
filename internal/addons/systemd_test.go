@@ -104,6 +104,7 @@ func startSystemdSession(t *testing.T, extra ...string) *systemdSession {
 			<-s.done
 		}
 		_ = ptmx.Close()
+		reapContainer(configDir)
 	})
 	return s
 }
