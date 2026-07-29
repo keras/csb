@@ -37,17 +37,48 @@ func RunClean(cfg *Config, rt *Runtime) error {
 		os.Exit(1)
 	}
 
+	containers := rt.ListCSBContainersInfo()
 	images := rt.ListCSBImagesInfo()
 	volumes := rt.ListCSBVolumesInfo()
 
-	if len(images) == 0 && len(volumes) == 0 {
+	if len(containers) == 0 && len(images) == 0 && len(volumes) == 0 {
 		fmt.Println("Nothing to remove.")
 		return nil
 	}
 
 	var entries []selectorEntry
 
+	if len(containers) > 0 {
+		entries = append(entries, selectorEntry{
+			label:    fmt.Sprintf("Containers (%d):", len(containers)),
+			isHeader: true,
+		})
+		maxName, maxStatus := 0, 0
+		for _, c := range containers {
+			if len(c.Name) > maxName {
+				maxName = len(c.Name)
+			}
+			if len(c.Status) > maxStatus {
+				maxStatus = len(c.Status)
+			}
+		}
+		for _, c := range containers {
+			label := c.ID
+			label += "  " + padRight(c.Name, maxName)
+			if c.Status != "" {
+				label += "  " + padRight(c.Status, maxStatus)
+			}
+			if cd := shortenHome(c.ConfigDir, cfg.Home); cd != "" {
+				label += "  " + cd
+			}
+			entries = append(entries, selectorEntry{label: label, containerID: c.ID})
+		}
+	}
+
 	if len(images) > 0 {
+		if len(entries) > 0 {
+			entries = append(entries, selectorEntry{isHeader: true})
+		}
 		entries = append(entries, selectorEntry{
 			label:    fmt.Sprintf("Images (%d):", len(images)),
 			isHeader: true,
@@ -121,6 +152,18 @@ func RunClean(cfg *Config, rt *Runtime) error {
 	}
 
 	fmt.Println()
+	// Remove containers first: they hold references to images, so `rmi -f`
+	// would fail on any image still backing a stopped csb container.
+	var containerIDs []string
+	for _, e := range selected {
+		if e.containerID != "" {
+			containerIDs = append(containerIDs, e.containerID)
+		}
+	}
+	if len(containerIDs) > 0 {
+		fmt.Printf("Removing %d container(s)...\n", len(containerIDs))
+		rt.RemoveContainers(containerIDs)
+	}
 	var imageIDs []string
 	for _, e := range selected {
 		if e.imageID != "" {

@@ -8,12 +8,13 @@ import (
 )
 
 type selectorEntry struct {
-	label    string
-	selected bool
-	isHeader bool
-	imageID  string
-	volName  string
-	syncPath string
+	label       string
+	selected    bool
+	isHeader    bool
+	imageID     string
+	volName     string
+	containerID string
+	syncPath    string
 }
 
 // runSelector shows an interactive terminal checkbox selector.
@@ -99,6 +100,7 @@ func runSelector(entries []selectorEntry) ([]selectorEntry, bool) {
 		case n == 1 && b[0] == ' ':
 			if !entries[cursor].isHeader {
 				entries[cursor].selected = !entries[cursor].selected
+				cursor = firstSelectable(entries, cursor+1, 1)
 			}
 		case n == 1 && (b[0] == 'a' || b[0] == 'A'):
 			for i := range entries {

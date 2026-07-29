@@ -133,6 +133,15 @@ type VolumeInfo struct {
 	ConfigDir string
 }
 
+// ContainerInfo holds metadata about a csb-managed container.
+type ContainerInfo struct {
+	ID        string
+	Name      string
+	Status    string // human status, e.g. "Up 3 minutes" or "Exited (0) 2 hours ago"
+	Running   bool
+	ConfigDir string
+}
+
 // ListCSBImagesInfo returns metadata for all csb-managed images.
 func (r *Runtime) ListCSBImagesInfo() []ImageInfo {
 	// docker images --format does not support .Label, so fetch ID/size/age
@@ -364,6 +373,92 @@ func (r *Runtime) RemoveVolume(name string) {
 	cmd := exec.Command(r.CLI, "volume", "rm", "-f", name)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
+	_ = cmd.Run()
+}
+
+// ListCSBContainersInfo returns metadata for all csb-managed containers,
+// running or stopped.
+func (r *Runtime) ListCSBContainersInfo() []ContainerInfo {
+	cmd := exec.Command(r.CLI, "ps", "-a",
+		"--filter", "label=csb.managed=true",
+		"--format", "{{.ID}}\t{{.Names}}\t{{.State}}\t{{.Status}}",
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var infos []ContainerInfo
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 4)
+		info := ContainerInfo{ID: parts[0]}
+		if len(parts) > 1 {
+			info.Name = parts[1]
+		}
+		if len(parts) > 2 {
+			info.Running = parts[2] == "running"
+		}
+		if len(parts) > 3 {
+			info.Status = parts[3]
+		}
+		infos = append(infos, info)
+	}
+	if len(infos) == 0 {
+		return nil
+	}
+	ids := make([]string, len(infos))
+	for i, info := range infos {
+		ids[i] = info.ID
+	}
+	configDirs := r.containerConfigDirs(ids)
+	for i := range infos {
+		infos[i].ConfigDir = configDirs[infos[i].ID]
+	}
+	return infos
+}
+
+// containerConfigDirs returns a short-ID → csb.config-dir map for the given
+// container IDs. ps only reports the 12-char short ID, so inspect's full Id is
+// truncated to match.
+func (r *Runtime) containerConfigDirs(ids []string) map[string]string {
+	args := append([]string{"container", "inspect"}, ids...)
+	cmd := exec.Command(r.CLI, args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	type ctrJSON struct {
+		Id     string `json:"Id"`
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
+	}
+	var ctrs []ctrJSON
+	if err := json.Unmarshal(out, &ctrs); err != nil {
+		return nil
+	}
+	result := make(map[string]string, len(ctrs))
+	for _, c := range ctrs {
+		id := c.Id
+		if len(id) > 12 {
+			id = id[:12]
+		}
+		result[id] = c.Config.Labels["csb.config-dir"]
+	}
+	return result
+}
+
+// RemoveContainers force-removes containers by ID (running or stopped).
+func (r *Runtime) RemoveContainers(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	args := append([]string{"rm", "-f"}, ids...)
+	cmd := exec.Command(r.CLI, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	_ = cmd.Run()
 }
 
