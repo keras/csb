@@ -17,3 +17,33 @@ podman — rootful containers inside the sandbox
   privileged container (the docker:dind recipe) when this addon is enabled.
   That is a large privilege relaxation — use the podman-rootless addon if
   you don't need the rootful behaviour.
+
+  With the systemd addon also enabled, the Podman API (Docker-compatible
+  REST) service comes up automatically on the standard rootful socket,
+  reachable by the sandbox user without sudo. Talk to it with the real
+  binary, not the `podman` wrapper above — sudo strips CONTAINER_HOST (and
+  DOCKER_HOST) via env_reset, so passing it to the wrapper silently runs
+  local root podman instead of exercising the socket:
+
+    /usr/bin/podman --url unix:///run/podman/podman.sock info
+    curl --unix-socket /run/podman/podman.sock http://d/v5.0.0/libpod/_ping
+
+  docker-compose, testcontainers, and other Docker-API clients read
+  DOCKER_HOST rather than CONTAINER_HOST:
+
+    export DOCKER_HOST=unix:///run/podman/podman.sock
+    docker-compose up
+
+  To skip that export entirely, enable the addon as:
+
+    --addon "podman docker-sock"
+
+  which also publishes the API at the Docker default path
+  (/var/run/docker.sock), where clients look when DOCKER_HOST is unset —
+  so `docker.from_env()` and friends work with no configuration at all.
+  It is opt-in because that path asserts podman *is* the Docker daemon for
+  everything in the container.
+
+  Access is group-gated to the sandbox user, not world-open — see the
+  comment in entrypoint.sh for why that's no more privilege than the
+  sudoers rule already grants.
