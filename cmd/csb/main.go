@@ -100,6 +100,7 @@ func (a *allowFlags) Set(v string) error {
 
 func runBroker() {
 	bind := flag.String("bind", "127.0.0.1:0", "listen address (port 0 = auto-assign)")
+	workspace := flag.String("workspace", "", "host workspace root; clients may only pick a cwd under it")
 	var allows allowFlags
 	flag.Var(&allows, "allow", "allowed command pattern, repeatable: \"cmd arg1 **\"")
 	flag.Parse()
@@ -127,7 +128,7 @@ func runBroker() {
 	info, _ := json.Marshal(map[string]any{"port": port, "token": token})
 	fmt.Println(string(info))
 
-	srv := broker.NewServer(token, rules)
+	srv := broker.NewServer(token, rules, *workspace)
 	if err := http.Serve(ln, srv); err != nil {
 		fmt.Fprintf(os.Stderr, "csb-broker: serve: %v\n", err)
 		os.Exit(1)

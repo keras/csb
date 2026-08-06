@@ -38,6 +38,7 @@ func runCommand(ctx context.Context, cancel context.CancelFunc, conn *websocket.
 type startFrame struct {
 	cmd  string
 	args []string
+	dir  string // absolute host cwd, already confined to the workspace; "" = inherit
 	tty  bool
 	cols uint16
 	rows uint16
@@ -46,6 +47,7 @@ type startFrame struct {
 func runCommandPipes(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, f startFrame) {
 	proc := exec.CommandContext(ctx, f.cmd, f.args...)
 	proc.Env = scrubEnv()
+	proc.Dir = f.dir
 
 	stdinPipe, err := proc.StdinPipe()
 	if err != nil {
@@ -71,7 +73,7 @@ func runCommandPipes(ctx context.Context, cancel context.CancelFunc, conn *webso
 		conn.Close(websocket.StatusNormalClosure, "")
 		return
 	}
-	slog.Info("command started", "cmd", f.cmd, "args", f.args, "pid", proc.Process.Pid)
+	slog.Info("command started", "cmd", f.cmd, "args", f.args, "dir", f.dir, "pid", proc.Process.Pid)
 
 	var wmu sync.Mutex
 	sendLocked := func(fr proto.Frame) {
@@ -158,6 +160,7 @@ func runCommandPipes(ctx context.Context, cancel context.CancelFunc, conn *webso
 func runCommandTTY(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, f startFrame) {
 	proc := exec.CommandContext(ctx, f.cmd, f.args...)
 	proc.Env = scrubEnv()
+	proc.Dir = f.dir
 
 	cols, rows := f.cols, f.rows
 	if cols == 0 {
@@ -175,7 +178,7 @@ func runCommandTTY(ctx context.Context, cancel context.CancelFunc, conn *websock
 	}
 	defer ptmx.Close()
 
-	slog.Info("command started (tty)", "cmd", f.cmd, "args", f.args, "pid", proc.Process.Pid, "cols", cols, "rows", rows)
+	slog.Info("command started (tty)", "cmd", f.cmd, "args", f.args, "dir", f.dir, "pid", proc.Process.Pid, "cols", cols, "rows", rows)
 
 	var wmu sync.Mutex
 	sendLocked := func(fr proto.Frame) {

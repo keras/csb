@@ -14,10 +14,14 @@ import (
 type Server struct {
 	token string
 	rules []allowlist.Rule
+	// workspace is the host directory mounted as the sandbox workspace. It is the
+	// only subtree a client may pick a working directory from; empty disables the
+	// feature (commands then run in the broker's own cwd).
+	workspace string
 }
 
-func NewServer(token string, rules []allowlist.Rule) *Server {
-	return &Server{token: token, rules: rules}
+func NewServer(token string, rules []allowlist.Rule, workspace string) *Server {
+	return &Server{token: token, rules: rules, workspace: workspace}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -60,9 +64,17 @@ func (s *Server) handle(conn *websocket.Conn, r *http.Request) {
 		return
 	}
 
+	dir, err := resolveCwd(s.workspace, f.Cwd)
+	if err != nil {
+		sendFrame(ctx, conn, proto.NewError("invalid_cwd", err.Error()))
+		conn.Close(websocket.StatusNormalClosure, "")
+		return
+	}
+
 	runCommand(ctx, cancel, conn, startFrame{
 		cmd:  f.Cmd,
 		args: f.Args,
+		dir:  dir,
 		tty:  f.Tty,
 		cols: f.Cols,
 		rows: f.Rows,

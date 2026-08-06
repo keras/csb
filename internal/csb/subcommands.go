@@ -396,7 +396,11 @@ func RunRun(cfg *Config, rt *Runtime, assets Assets) error {
 
 	if cfg.HostExecEnabled {
 		logInfo("starting host exec broker", "bind", cfg.HostExecBind, "allow", strings.Join(cfg.HostExecAllow, ","))
-		brokerProc, brokerURL, brokerToken, err = StartHostExec(cfg.HostExecAllow, cfg.HostExecBind, cfg.ContainerCLI())
+		hostWorkspace := ""
+		if cfg.Workspace != nil {
+			hostWorkspace = *cfg.Workspace
+		}
+		brokerProc, brokerURL, brokerToken, err = StartHostExec(cfg.HostExecAllow, cfg.HostExecBind, cfg.ContainerCLI(), hostWorkspace)
 		if err != nil {
 			return fmt.Errorf("starting host exec: %w", err)
 		}

@@ -63,7 +63,7 @@ func TestRunExitCode(t *testing.T) {
 		conn.Close(websocket.StatusNormalClosure, "")
 	})
 
-	code, err := Run(url, token, "myapp", []string{}, nil, noStdin(), &bytes.Buffer{}, &bytes.Buffer{}, TTYAuto)
+	code, err := Run(url, token, "myapp", []string{}, nil, noStdin(), &bytes.Buffer{}, &bytes.Buffer{}, TTYAuto, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestRunStdoutStderr(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	code, runErr := Run(url, token, "cmd", nil, nil, noStdin(), &stdout, &stderr, TTYAuto)
+	code, runErr := Run(url, token, "cmd", nil, nil, noStdin(), &stdout, &stderr, TTYAuto, "")
 	if runErr != nil {
 		t.Fatal(runErr)
 	}
@@ -118,7 +118,7 @@ func TestRunTTYMode(t *testing.T) {
 				sendFrame(t, conn, proto.NewExit(0))
 				conn.Close(websocket.StatusNormalClosure, "")
 			})
-			Run(url, token, "cmd", nil, nil, noStdin(), &bytes.Buffer{}, &bytes.Buffer{}, tc.mode)
+			Run(url, token, "cmd", nil, nil, noStdin(), &bytes.Buffer{}, &bytes.Buffer{}, tc.mode, "")
 			if gotTTY != tc.wantTTY {
 				t.Errorf("start frame Tty: got %v, want %v", gotTTY, tc.wantTTY)
 			}
@@ -133,7 +133,7 @@ func TestRunErrorFrame(t *testing.T) {
 		conn.Close(websocket.StatusNormalClosure, "")
 	})
 
-	code, err := Run(url, token, "rm", []string{"-rf", "/"}, nil, noStdin(), &bytes.Buffer{}, &bytes.Buffer{}, TTYAuto)
+	code, err := Run(url, token, "rm", []string{"-rf", "/"}, nil, noStdin(), &bytes.Buffer{}, &bytes.Buffer{}, TTYAuto, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestRunAuthHeader(t *testing.T) {
 		conn.Close(websocket.StatusNormalClosure, "")
 	})
 
-	Run(url, token, "cmd", nil, nil, noStdin(), &bytes.Buffer{}, &bytes.Buffer{}, TTYAuto)
+	Run(url, token, "cmd", nil, nil, noStdin(), &bytes.Buffer{}, &bytes.Buffer{}, TTYAuto, "")
 
 	if gotAuth != "Bearer test-token" {
 		t.Errorf("Authorization header: got %q, want %q", gotAuth, "Bearer test-token")

@@ -50,7 +50,7 @@ func writeFrame(t *testing.T, conn *websocket.Conn, f proto.Frame) {
 }
 
 func newTestServer(token string, rules []allowlist.Rule) *httptest.Server {
-	return httptest.NewServer(NewServer(token, rules))
+	return httptest.NewServer(NewServer(token, rules, ""))
 }
 
 func TestEchoCommand(t *testing.T) {
@@ -162,7 +162,7 @@ func TestProcessKilledOnClientDisconnect(t *testing.T) {
 
 	handlerDone := make(chan struct{})
 	mux := http.NewServeMux()
-	srv := NewServer(token, rules)
+	srv := NewServer(token, rules, "")
 	mux.HandleFunc("/run", func(w http.ResponseWriter, r *http.Request) {
 		srv.ServeHTTP(w, r)
 		close(handlerDone)

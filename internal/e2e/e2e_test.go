@@ -6,6 +6,8 @@ package e2e_test
 import (
 	"bytes"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -17,9 +19,14 @@ import (
 // setup starts a real broker httptest.Server with the given rules and returns
 // the WebSocket URL and token needed to connect.
 func setup(t *testing.T, rules []allowlist.Rule) (wsURL, token string) {
+	return setupWorkspace(t, rules, "")
+}
+
+// setupWorkspace is setup with a workspace root, enabling client-chosen cwds.
+func setupWorkspace(t *testing.T, rules []allowlist.Rule, workspace string) (wsURL, token string) {
 	t.Helper()
 	const tok = "e2e-token"
-	ts := httptest.NewServer(broker.NewServer(tok, rules))
+	ts := httptest.NewServer(broker.NewServer(tok, rules, workspace))
 	t.Cleanup(ts.Close)
 	return "ws" + strings.TrimPrefix(ts.URL, "http"), tok
 }
@@ -28,10 +35,16 @@ func setup(t *testing.T, rules []allowlist.Rule) (wsURL, token string) {
 // stdout, stderr, and exit code.
 func run(t *testing.T, wsURL, token, cmd string, args []string, stdinData []byte) (stdout, stderr string, code int) {
 	t.Helper()
+	return runIn(t, wsURL, token, "", cmd, args, stdinData)
+}
+
+// runIn is run with a workspace-relative cwd for the host process.
+func runIn(t *testing.T, wsURL, token, cwd, cmd string, args []string, stdinData []byte) (stdout, stderr string, code int) {
+	t.Helper()
 	var outBuf, errBuf bytes.Buffer
 	stdinR := bytes.NewReader(stdinData)
 	var err error
-	code, err = client.Run(wsURL, token, cmd, args, nil, stdinR, &outBuf, &errBuf, client.TTYAuto)
+	code, err = client.Run(wsURL, token, cmd, args, nil, stdinR, &outBuf, &errBuf, client.TTYAuto, cwd)
 	if err != nil {
 		t.Fatalf("client.Run: %v", err)
 	}
@@ -137,7 +150,7 @@ func TestE2EWrongToken(t *testing.T) {
 	wsURL, _ := setup(t, rules)
 
 	var outBuf, errBuf bytes.Buffer
-	_, err := client.Run(wsURL, "wrong-token", "echo", []string{"hi"}, nil, bytes.NewReader(nil), &outBuf, &errBuf, client.TTYAuto)
+	_, err := client.Run(wsURL, "wrong-token", "echo", []string{"hi"}, nil, bytes.NewReader(nil), &outBuf, &errBuf, client.TTYAuto, "")
 	if err == nil {
 		t.Error("expected error when connecting with wrong token, got nil")
 	}
@@ -237,5 +250,110 @@ func TestE2EEnvironmentScrubbed(t *testing.T) {
 	}
 	if got := strings.TrimRight(stdout, "\n"); got != "empty" {
 		t.Errorf("GIT_SSH_COMMAND leaked into host process: got %q", got)
+	}
+}
+
+func TestE2ECwdUnderWorkspace(t *testing.T) {
+	ws := t.TempDir()
+	sub := filepath.Join(ws, "cmd", "csb")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The workspace root may itself be a symlink (macOS /var → /private/var);
+	// compare against the resolved form, which is what the broker chdirs into.
+	resolved, err := filepath.EvalSymlinks(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rules := []allowlist.Rule{{Cmd: "pwd", Args: []string{}}}
+	wsURL, token := setupWorkspace(t, rules, ws)
+
+	stdout, stderr, code := runIn(t, wsURL, token, "cmd/csb", "pwd", []string{}, nil)
+	if code != 0 {
+		t.Fatalf("exit code %d, stderr %q", code, stderr)
+	}
+	if got := strings.TrimRight(stdout, "\n"); got != resolved {
+		t.Errorf("cwd: got %q, want %q", got, resolved)
+	}
+}
+
+func TestE2ECwdRootOfWorkspace(t *testing.T) {
+	ws := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := []allowlist.Rule{{Cmd: "pwd", Args: []string{}}}
+	wsURL, token := setupWorkspace(t, rules, ws)
+
+	stdout, _, code := runIn(t, wsURL, token, ".", "pwd", []string{}, nil)
+	if code != 0 {
+		t.Fatalf("exit code %d", code)
+	}
+	if got := strings.TrimRight(stdout, "\n"); got != resolved {
+		t.Errorf("cwd: got %q, want %q", got, resolved)
+	}
+}
+
+func TestE2ECwdEscapeDenied(t *testing.T) {
+	ws := t.TempDir()
+	rules := []allowlist.Rule{{Cmd: "pwd", Args: []string{}}}
+	wsURL, token := setupWorkspace(t, rules, ws)
+
+	for _, cwd := range []string{"..", "../..", "sub/../../etc", "/etc"} {
+		_, stderr, code := runIn(t, wsURL, token, cwd, "pwd", []string{}, nil)
+		if code != 125 {
+			t.Errorf("cwd %q: exit code got %d, want 125", cwd, code)
+		}
+		if !strings.Contains(stderr, "invalid_cwd") {
+			t.Errorf("cwd %q: stderr %q, want invalid_cwd", cwd, stderr)
+		}
+	}
+}
+
+func TestE2ECwdSymlinkEscapeDenied(t *testing.T) {
+	ws := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(ws, "escape")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	rules := []allowlist.Rule{{Cmd: "pwd", Args: []string{}}}
+	wsURL, token := setupWorkspace(t, rules, ws)
+
+	_, _, code := runIn(t, wsURL, token, "escape", "pwd", []string{}, nil)
+	if code != 125 {
+		t.Errorf("symlink out of workspace: exit code got %d, want 125", code)
+	}
+}
+
+func TestE2ECwdWithoutWorkspaceDenied(t *testing.T) {
+	rules := []allowlist.Rule{{Cmd: "pwd", Args: []string{}}}
+	wsURL, token := setup(t, rules) // no workspace root
+
+	_, stderr, code := runIn(t, wsURL, token, "sub", "pwd", []string{}, nil)
+	if code != 125 {
+		t.Errorf("exit code got %d, want 125", code)
+	}
+	if !strings.Contains(stderr, "no workspace") {
+		t.Errorf("stderr %q, want mention of missing workspace", stderr)
+	}
+}
+
+func TestE2ENoCwdRunsInBrokerDir(t *testing.T) {
+	// Empty cwd keeps the pre-existing behaviour: the broker's own directory.
+	brokerDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := []allowlist.Rule{{Cmd: "pwd", Args: []string{}}}
+	wsURL, token := setupWorkspace(t, rules, t.TempDir())
+
+	stdout, _, code := run(t, wsURL, token, "pwd", []string{}, nil)
+	if code != 0 {
+		t.Fatalf("exit code %d", code)
+	}
+	if got := strings.TrimRight(stdout, "\n"); got != brokerDir {
+		t.Errorf("cwd: got %q, want broker dir %q", got, brokerDir)
 	}
 }

@@ -30,6 +30,8 @@ const (
 
 // Run connects to the broker, sends cmd+args, wires stdio, and returns the exit code.
 // signals should be a channel receiving os.Signal values (SIGINT, SIGTERM) to forward.
+// cwd, when non-empty, is a workspace-relative directory the host process should
+// run in; the broker rejects anything that resolves outside its workspace root.
 func Run(
 	brokerURL, token, cmd string,
 	args []string,
@@ -37,6 +39,7 @@ func Run(
 	stdin io.Reader,
 	stdout, stderr io.Writer,
 	ttyMode TTYMode,
+	cwd string,
 ) (int, error) {
 	ctx := context.Background()
 
@@ -95,6 +98,7 @@ func Run(
 	} else {
 		startFrame = proto.NewStart(cmd, args)
 	}
+	startFrame.Cwd = cwd
 
 	if err := sendLocked(startFrame); err != nil {
 		return 1, fmt.Errorf("send start: %w", err)
@@ -212,6 +216,8 @@ func exitCodeForError(errCode string) int {
 	switch errCode {
 	case "not_whitelisted":
 		return 126
+	case "invalid_cwd":
+		return 125
 	case "unknown_command", "exec_failed":
 		return 127
 	default:

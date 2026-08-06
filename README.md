@@ -99,6 +99,24 @@ echo "hello" | csb-host-run ./cmd ...
 
 A PTY is allocated on the host only when both stdin and stdout are terminals. Pass `-t` to force a PTY (e.g. rich CLIs or colored output through a pipe) or `-T` to never allocate one.
 
+### Working directory
+
+The host process runs in the directory that mirrors your sandbox cwd, so running `csb-host-run` from a subdirectory of the workspace does the expected thing on the host:
+
+```sh
+cd $CSB_WORKSPACE_DIR/internal/broker
+csb-host-run go test .        # runs in <workspace>/internal/broker on the host
+```
+
+Use `-C DIR` to pick a different directory, or `--no-cwd` to keep the old behaviour (the directory csb itself was started from):
+
+```sh
+csb-host-run -C internal/broker go test .
+csb-host-run --no-cwd make run
+```
+
+The directory is sent as a workspace-relative path and the broker re-resolves it against the host workspace root, rejecting absolute paths, `..` traversal, and symlinks that point outside the workspace — a sandbox cannot steer host commands into arbitrary directories. Outside the workspace (e.g. from `$HOME`) the mirroring is skipped silently; an explicit `-C` outside it is an error.
+
 ### Enabling host-exec
 
 Enable per-invocation with `--host-exec` and specify allowed commands with one or more `--host-exec-allow` flags:
@@ -132,12 +150,13 @@ git status      # git status with no extra args
 git log **      # git log with any trailing args
 ```
 
-`csb-host-run` exits **126** if the command is not in the allowlist, **127** if the binary is not found on the host, and propagates the actual exit code otherwise.
+`csb-host-run` exits **125** if the requested working directory is not inside the workspace, **126** if the command is not in the allowlist, **127** if the binary is not found on the host, and propagates the actual exit code otherwise.
 
 ### Security properties
 
 - The broker binds only to the container network interface (not all host interfaces) on Linux, limiting exposure to the local container bridge network.
 - Access requires a per-session 32-byte random token injected via env var — each `csb` invocation gets a fresh token.
+- The working directory a client may request is confined to the mounted workspace, checked after symlink resolution on the host.
 - The host process runs with a scrubbed environment: only `PATH`, `HOME`, `USER`, `LANG`, and `TERM` from the broker's own env are forwarded.
 - The command name itself is never wildcarded — only argument positions can use `*`/`**`.
 - Host-exec is opt-in; the default configuration does not enable it.

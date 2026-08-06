@@ -406,6 +406,13 @@ func ResolveEnv(cfg *Config, rt *Runtime, brokerURL, brokerToken string) [][2]st
 	env = append(env, [2]string{"HOME", ContainerHome})
 	env = append(env, [2]string{"CSB_DEFAULT_SHELL", cfg.DefaultShell})
 
+	// CSB_WORKSPACE_DIR is the container path the host workspace is mounted at.
+	// csb-host-run uses it to translate the current directory into the
+	// workspace-relative form the broker accepts.
+	if cfg.Workspace != nil {
+		env = append(env, [2]string{"CSB_WORKSPACE_DIR", cfg.Workdir()})
+	}
+
 	// CSB_LOGIN_SHELL marks the bare interactive shape: no explicit command (the
 	// else-branch of resolveContainerCmd, with or without tmux). The systemd
 	// launcher reads this to route that session through login(1)/PAM so it becomes

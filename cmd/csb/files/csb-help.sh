@@ -161,6 +161,18 @@ colored output through a pipe) or -T (never allocate one):
     csb-host-run -t some-rich-cli | tee log
     csb-host-run -T make run
 
+The host command runs in the directory matching your current one: a
+sandbox cwd of \$CSB_WORKSPACE_DIR/cmd/csb runs in <workspace>/cmd/csb
+on the host. Outside the workspace (e.g. \$HOME) the host side falls
+back to the directory csb was started from. Pick another directory with
+-C, or turn the mirroring off with --no-cwd:
+
+    csb-host-run -C internal/broker go test .
+    csb-host-run --no-cwd make run
+
+-C only accepts directories inside the workspace; the host re-checks
+this and refuses anything resolving outside it (exit 125).
+
 The host enforces the allowlist and scrubs the environment before
 spawning anything — env vars from the sandbox are not forwarded.
 
@@ -169,8 +181,8 @@ sandbox), e.g.:
 
     csb --host-exec --host-exec-allow "make run" --host-exec-allow "git **"
 
-Exit codes: 126 = not allowlisted, 127 = not found on host, otherwise
-the command's own exit code.
+Exit codes: 125 = cwd outside the workspace, 126 = not allowlisted,
+127 = not found on host, otherwise the command's own exit code.
 EOF
 }
 

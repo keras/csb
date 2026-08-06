@@ -505,7 +505,7 @@ func containerGatewayIP(containerCLI string) string {
 
 // StartHostExec starts the broker (embedded in this binary via CSB_HOST_BROKER_MODE)
 // and returns (cmd, wsURL, token, error).
-func StartHostExec(allowRules []string, bind string, containerCLI string) (*exec.Cmd, string, string, error) {
+func StartHostExec(allowRules []string, bind string, containerCLI string, workspace string) (*exec.Cmd, string, string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, "", "", fmt.Errorf("locating csb executable: %w", err)
@@ -523,6 +523,9 @@ func StartHostExec(allowRules []string, bind string, containerCLI string) (*exec
 	}
 
 	args := []string{"--bind", actualBind}
+	if workspace != "" {
+		args = append(args, "--workspace", workspace)
+	}
 	for _, rule := range allowRules {
 		args = append(args, "--allow", rule)
 	}

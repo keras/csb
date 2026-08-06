@@ -13,9 +13,13 @@ type Frame struct {
 	ErrCode  string   `json:"err_code,omitempty"`
 	Message  string   `json:"message,omitempty"`
 	Name     string   `json:"name,omitempty"` // signal name
-	Tty      bool     `json:"tty,omitempty"`
-	Cols     uint16   `json:"cols,omitempty"`
-	Rows     uint16   `json:"rows,omitempty"`
+	// Cwd is the working directory for the host process, expressed as a path
+	// relative to the host workspace root. Empty means the broker's own cwd.
+	// It is always relative so the broker can confine it to the workspace.
+	Cwd  string `json:"cwd,omitempty"`
+	Tty  bool   `json:"tty,omitempty"`
+	Cols uint16 `json:"cols,omitempty"`
+	Rows uint16 `json:"rows,omitempty"`
 }
 
 func NewStart(cmd string, args []string) Frame {
