@@ -5,8 +5,10 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -34,6 +36,20 @@ var addonsFS embed.FS
 //go:embed files/csb-host-run.tar.xz
 var hostRunTarXZ []byte
 
+// exit is the only place csb sets a process exit status: an *csb.ExitError
+// carries its own, anything else is a csb failure and exits 1.
+func exit(err error) {
+	var exitErr *csb.ExitError
+	if errors.As(err, &exitErr) {
+		if exitErr.Err != nil {
+			fmt.Fprintf(os.Stderr, "csb: error: %v\n", exitErr.Err)
+		}
+		os.Exit(exitErr.Code)
+	}
+	fmt.Fprintf(os.Stderr, "csb: error: %v\n", err)
+	os.Exit(1)
+}
+
 func main() {
 	if os.Getenv("CSB_HOST_BROKER_MODE") == "1" {
 		runBroker()
@@ -42,8 +58,7 @@ func main() {
 
 	cfg, err := csb.ParseArgs(os.Args[1:])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "csb: error: %v\n", err)
-		os.Exit(1)
+		exit(err)
 	}
 
 	assets := csb.Assets{
@@ -63,8 +78,7 @@ func main() {
 	switch cfg.Subcommand {
 	case "clean":
 		if err := csb.RunClean(cfg, rt); err != nil {
-			fmt.Fprintf(os.Stderr, "csb: error: %v\n", err)
-			os.Exit(1)
+			exit(err)
 		}
 	case "config":
 		var err error
@@ -79,13 +93,11 @@ func main() {
 			err = csb.RunConfigUpdate(cfg, assets)
 		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "csb: error: %v\n", err)
-			os.Exit(1)
+			exit(err)
 		}
 	default: // "run"
 		if err := csb.RunRun(cfg, rt, assets); err != nil {
-			fmt.Fprintf(os.Stderr, "csb: error: %v\n", err)
-			os.Exit(1)
+			exit(err)
 		}
 	}
 }
@@ -127,6 +139,19 @@ func runBroker() {
 
 	info, _ := json.Marshal(map[string]any{"port": port, "token": token})
 	fmt.Println(string(info))
+
+	// Deadman switch: csb holds the write end of our stdin pipe for its whole
+	// life, so EOF means it died without signaling us (e.g. SIGKILL). Gated on
+	// stdin being a pipe — /dev/null and files read as instant EOF, which would
+	// kill a manually-started broker on startup.
+	if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeNamedPipe != 0 {
+		go func() {
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			os.Exit(0)
+		}()
+	} else {
+		fmt.Fprintln(os.Stderr, "csb-broker: stdin is not a pipe; running without a deadman switch")
+	}
 
 	srv := broker.NewServer(token, rules, *workspace)
 	if err := http.Serve(ln, srv); err != nil {

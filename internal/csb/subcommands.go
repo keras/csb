@@ -3,13 +3,16 @@ package csb
 import (
 	"archive/tar"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
@@ -33,8 +36,7 @@ func addonNames(cfg *Config) string {
 // RunClean interactively selects csb images and volumes to remove.
 func RunClean(cfg *Config, rt *Runtime) error {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		fmt.Fprintln(os.Stderr, "csb clean: requires an interactive terminal")
-		os.Exit(1)
+		return errors.New("clean requires an interactive terminal")
 	}
 
 	containers := rt.ListCSBContainersInfo()
@@ -275,8 +277,7 @@ func RunConfigEdit(cfg *Config) error {
 
 	if cfg.ConfigEditTarget == "workdir" {
 		if cfg.Workspace == nil {
-			fmt.Fprintln(os.Stderr, "csb config edit workdir requires a workspace (not --no-workspace)")
-			os.Exit(1)
+			return errors.New("config edit workdir requires a workspace (not --no-workspace)")
 		}
 		path = workdirConfigPath(cfg.ConfigDir, *cfg.Workspace)
 		header = fmt.Sprintf("# workdir: %s\n", *cfg.Workspace)
@@ -306,16 +307,15 @@ func RunConfigEdit(cfg *Config) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	result := cmd.Run()
-
-	if result != nil {
-		if exitErr, ok := result.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			// The editor chose its status; pass it through untouched.
+			return &ExitError{Code: exitErr.ExitCode()}
 		}
-		os.Exit(1)
+		return fmt.Errorf("running %s: %w", editor, err)
 	}
-	os.Exit(0)
-	return nil // unreachable
+	return nil
 }
 
 // RunRun executes the main run subcommand.
@@ -352,8 +352,7 @@ func RunRun(cfg *Config, rt *Runtime, assets Assets) error {
 		}
 		addonPath := filepath.Join(cfg.ConfigDir, "addons", name, "install.sh")
 		if _, err := os.Stat(addonPath); os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "csb: error: addon not found: %s\n", name)
-			os.Exit(2)
+			return &ExitError{Code: 2, Err: fmt.Errorf("addon not found: %s", name)}
 		}
 	}
 	logInfo("addons", "enabled", addonNames(cfg))
@@ -423,23 +422,41 @@ func RunRun(cfg *Config, rt *Runtime, assets Assets) error {
 
 	logInfo("launching", "command", shJoin(cmd))
 
-	if brokerProc != nil {
-		// Can't use exec when we need to clean up the broker after container exits.
-		runCmd := exec.Command(cmd[0], cmd[1:]...)
-		runCmd.Stdin = os.Stdin
-		runCmd.Stdout = os.Stdout
-		runCmd.Stderr = os.Stderr
-		runErr := runCmd.Run()
-		_ = brokerProc.Process.Signal(os.Interrupt)
-		_ = brokerProc.Wait()
-		if runErr != nil {
-			if exitErr, ok := runErr.(*exec.ExitError); ok {
-				os.Exit(exitErr.ExitCode())
-			}
-			os.Exit(1)
-		}
-		return nil
+	runCmd := exec.Command(cmd[0], cmd[1:]...)
+	runCmd.Stdin, runCmd.Stdout, runCmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	// No Setpgid: the container must stay in csb's foreground group so the tty
+	// delivers Ctrl-C straight to podman.
+	//
+	// Notify before Start — a signal in between would hit the default
+	// disposition and kill csb, orphaning the container and broker.
+	sigC := make(chan os.Signal, 1)
+	signal.Notify(sigC, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer close(sigC) // LIFO: Stop first, then close ends the goroutine
+	defer signal.Stop(sigC)
+	if err := runCmd.Start(); err != nil {
+		return fmt.Errorf("starting %s: %w", cmd[0], err)
 	}
 
-	return rt.ExecRun(cmd)
+	go func() {
+		for s := range sigC {
+			_ = runCmd.Process.Signal(s)
+		}
+	}()
+
+	runErr := runCmd.Wait()
+
+	if brokerProc != nil {
+		_ = brokerProc.Process.Signal(os.Interrupt)
+		_ = brokerProc.Wait()
+	}
+
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			// The container chose its status; not a csb error.
+			return &ExitError{Code: exitErr.ExitCode()}
+		}
+		return fmt.Errorf("waiting for %s: %w", cmd[0], runErr)
+	}
+	return nil
 }

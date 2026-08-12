@@ -136,17 +136,17 @@ loop:
 		case arg == "--help-config":
 			if subcommand == "run" {
 				fmt.Print(formatHelpFull())
-				os.Exit(0)
+				return pf, &ExitError{Code: 0}
 			}
 			continue
 		case arg == "-h" || arg == "--help":
 			switch subcommand {
 			case "config":
 				fmt.Print(formatConfigHelp())
-				os.Exit(0)
+				return pf, &ExitError{Code: 0}
 			case "run":
 				fmt.Print(formatHelp())
-				os.Exit(0)
+				return pf, &ExitError{Code: 0}
 			}
 			continue // clean has no dedicated help screen
 		}
@@ -395,7 +395,7 @@ func buildCleanConfig(pf parsedFlags, configDir string, workspace *string, yamlL
 func buildConfigConfig(pf parsedFlags, configDir string, workspace *string, yamlLayers []map[string]interface{}, cwd, home string) (*Config, error) {
 	if len(pf.positional) == 0 {
 		fmt.Print(formatConfigHelp())
-		os.Exit(0)
+		return nil, &ExitError{Code: 0}
 	}
 
 	action := pf.positional[0]

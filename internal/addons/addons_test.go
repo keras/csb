@@ -22,9 +22,9 @@ var (
 )
 
 // reapContainer force-removes any csb container carrying the given config-dir
-// label. csb execs into `podman run` (syscall.Exec), so when a test SIGKILLs
-// the csb process the container's conmon keeps it — and its published ports
-// (e.g. selkies' coturn on 3478) — alive, and the next test fails to bind. The
+// label. csb forwards graceful signals to the container it supervises, but a
+// SIGKILL skips that, leaving conmon holding the container and its published
+// ports (e.g. selkies' coturn on 3478) so the next test fails to bind. The
 // config-dir label is unique per test, so this reaps exactly that container.
 func reapContainer(configDir string) {
 	cli := "docker"

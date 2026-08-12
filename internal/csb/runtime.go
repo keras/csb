@@ -462,15 +462,6 @@ func (r *Runtime) RemoveContainers(ids []string) {
 	_ = cmd.Run()
 }
 
-// ExecRun replaces the current process with the given command using syscall.Exec.
-func (r *Runtime) ExecRun(argv []string) error {
-	path, err := exec.LookPath(argv[0])
-	if err != nil {
-		return fmt.Errorf("exec %s: %w", argv[0], err)
-	}
-	return syscall.Exec(path, argv, os.Environ())
-}
-
 // containerGatewayIP returns the host IP on the container bridge network (Linux only),
 // but only if that IP is actually bound to a local interface (so the broker can bind to it).
 // Returns "" when the gateway is not a local address (e.g. rootless podman with slirp4netns).
@@ -503,6 +494,10 @@ func containerGatewayIP(containerCLI string) string {
 	return ip
 }
 
+// hostExecDeadmanWrite holds the write end of the broker's deadman pipe.
+// Never closed on purpose: process death closes the fd, which is the signal.
+var hostExecDeadmanWrite *os.File
+
 // StartHostExec starts the broker (embedded in this binary via CSB_HOST_BROKER_MODE)
 // and returns (cmd, wsURL, token, error).
 func StartHostExec(allowRules []string, bind string, containerCLI string, workspace string) (*exec.Cmd, string, string, error) {
@@ -532,15 +527,30 @@ func StartHostExec(allowRules []string, bind string, containerCLI string, worksp
 
 	cmd := exec.Command(exe, args...)
 	cmd.Env = append(os.Environ(), "CSB_HOST_BROKER_MODE=1")
+	// Own process group: teardown is explicit (see RunRun), so the broker must
+	// not also take terminal signals — that races its death against the container's.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, "", "", fmt.Errorf("creating stdout pipe: %w", err)
 	}
 	cmd.Stderr = nil
 
+	// Deadman pipe: covers SIGKILL, where the explicit teardown never runs.
+	// Must stay a pipe — the broker arms the switch only for a pipe on stdin.
+	deadmanRead, deadmanWrite, err := os.Pipe()
+	if err != nil {
+		return nil, "", "", fmt.Errorf("creating deadman pipe: %w", err)
+	}
+	cmd.Stdin = deadmanRead
+
 	if err := cmd.Start(); err != nil {
+		deadmanRead.Close()
+		deadmanWrite.Close()
 		return nil, "", "", fmt.Errorf("starting broker: %w", err)
 	}
+	deadmanRead.Close()
+	hostExecDeadmanWrite = deadmanWrite
 	logInfo("host exec broker starting", "pid", cmd.Process.Pid, "bind", actualBind)
 
 	// Read the ready JSON line with timeout
