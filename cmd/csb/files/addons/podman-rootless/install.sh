@@ -17,4 +17,4 @@ install -D -m 0644 registries.conf /etc/containers/registries.conf
 install -D -m 0644 storage.conf    /etc/containers/storage.conf
 install -D -m 0644 containers.conf /etc/containers/containers.conf
 install -D -m 0755 entrypoint.sh   /etc/csb/entrypoint.d/podman.sh
-install -D -m 0644 help            /etc/csb/help.d/podman
+install -D -m 0644 help            /etc/csb/help.d/podman-rootless

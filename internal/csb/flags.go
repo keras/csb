@@ -467,7 +467,7 @@ func formatHelp() string {
 
 Subcommands:
   run               Run a command in an isolated container (default)
-  clean             Interactively select csb images and volumes to remove
+  clean             Interactively select csb containers, images, and volumes to remove
   config show       Print the fully resolved configuration as YAML
   config show context  List the docker build context that would be sent
   config edit       Open the user or workdir config file in $VISUAL/$EDITOR/vi
