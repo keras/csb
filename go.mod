@@ -1,6 +1,7 @@
 module github.com/keras/csb
 
 go 1.26
+toolchain go1.26.5
 
 require (
 	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f
