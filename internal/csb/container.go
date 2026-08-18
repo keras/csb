@@ -442,6 +442,8 @@ func ResolveEnv(cfg *Config, rt *Runtime, brokerURL, brokerToken string) [][2]st
 	colorterm := os.Getenv("COLORTERM")
 	env = append(env, [2]string{"COLORTERM", colorterm})
 
+	env = append(env, [2]string{"TZ", cfg.Timezone})
+
 	if cfg.Verbose {
 		env = append(env, [2]string{"CSB_VERBOSE", "1"})
 	}

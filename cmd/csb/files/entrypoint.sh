@@ -16,6 +16,20 @@ export LD_PRELOAD=$(find /usr/lib -name 'libnss_wrapper.so' | head -1)
 export HOME="$CSB_HOME"
 export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
 
+# Timezone: TZ is already in the environment (set by ResolveEnv, defaulting to
+# the host's own zone), which covers TZ-aware tools. Also point /etc/localtime
+# at the matching zoneinfo file and write /etc/timezone for tools that only
+# consult those. Applied here rather than baked into the image, since the same
+# image is shared across runs that may request different zones.
+if [ -n "$TZ" ]; then
+    if [ -f "/usr/share/zoneinfo/$TZ" ]; then
+        ln -sfn "/usr/share/zoneinfo/$TZ" /etc/localtime
+        echo "$TZ" > /etc/timezone
+    else
+        printf '[csb] warning: timezone %s not found in /usr/share/zoneinfo; leaving container on UTC\n' "$TZ" >&2
+    fi
+fi
+
 # Fix ownership of home dir
 chown "${HOST_UID}:${HOST_GID}" $HOME
 

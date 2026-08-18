@@ -112,6 +112,23 @@ func TestParseArgs_CLIArchBeatsEnvAndYAML(t *testing.T) {
 	assert.Equal(t, "arm64", cfg.Arch)
 }
 
+// TestParseArgs_CLITimezoneBeatsEnvAndYAML verifies CLI --timezone beats
+// CSB_TIMEZONE env and yaml timezone.
+func TestParseArgs_CLITimezoneBeatsEnvAndYAML(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("timezone: Europe/Berlin\n"),
+		0644,
+	))
+	t.Setenv("CSB_CONFIG_DIR", dir)
+	t.Setenv("CSB_TIMEZONE", "Asia/Tokyo")
+
+	cfg, err := ParseArgs([]string{"--timezone", "Pacific/Auckland", "--no-workspace", "config", "show"})
+	require.NoError(t, err)
+	assert.Equal(t, "Pacific/Auckland", cfg.Timezone)
+}
+
 // TestParseArgs_WorkdirAdditiveAddonsExtendsUser verifies that a workdir config with
 // additive addons entries (+addon) appends to the user config end-to-end.
 func TestParseArgs_WorkdirAdditiveAddonsExtendsUser(t *testing.T) {

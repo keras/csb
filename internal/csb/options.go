@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
+	_ "time/tzdata"
 
 	"golang.org/x/term"
 )
@@ -46,6 +48,7 @@ type Options struct {
 	DefaultCmd   []string `yaml:"default_cmd"                             example:"[vim]"       help:"startup command (default: <default_shell> -l; overridden by positional args)"`
 	Addons       []string `flag:"addon"           yaml:"addons"           default:"mise sudo"   dedup:"first"         example:"\n- mise\n- sudo\n- gui\n- packages git nano" help:"addon to install (NAME [ARGS...])"     metavar:"SPEC"`
 	Arch         string   `flag:"arch"            env:"CSB_ARCH"          yaml:"arch"             default:"@hostArch"   example:"arm64"        validate:"arch"   help:"container arch (amd64|arm64); requires QEMU/binfmt on host when not host's arch"  metavar:"ARCH"`
+	Timezone     string   `flag:"timezone"        env:"CSB_TIMEZONE"      yaml:"timezone"         default:"@hostTimezone" example:"America/New_York" validate:"timezone" help:"container timezone, IANA name (default: mirror the host's)"  metavar:"TZ"`
 	Mount        []Mount  `flag:"mount"           yaml:"mount"            parse:"mount"         example:"\n- ~/.gitconfig:~/.gitconfig:ro"  help:"extra bind mounts"                        metavar:"SRC:DST[:MODE]"`
 	EnvForward   []string `flag:"env-forward"     env:"CSB_ENV_FORWARD"   envsep:"fields"       yaml:"env_forward"     example:"[MY_TOKEN, OTHER_VAR]"  help:"host env var names to forward into the container"  metavar:"NAME"`
 	EnvInject    []string `flag:"env"             env:"CSB_ENV"           envsep:"fields"       yaml:"env"             example:"[MY_VAR=hello, DEBUG=1]"  help:"KEY=VALUE pairs to inject into the container"  metavar:"KEY=VALUE"`
@@ -62,9 +65,53 @@ type Options struct {
 
 // defaultFuncs backs "@name" defaults in struct tags.
 var defaultFuncs = map[string]func() any{
-	"autoTTY":     func() any { return term.IsTerminal(int(os.Stdin.Fd())) },
-	"hostArch":    func() any { return runtime.GOARCH },
-	"trueDefault": func() any { return true },
+	"autoTTY":      func() any { return term.IsTerminal(int(os.Stdin.Fd())) },
+	"hostArch":     func() any { return runtime.GOARCH },
+	"hostTimezone": func() any { return hostTimezone() },
+	"trueDefault":  func() any { return true },
+}
+
+// hostTimezone determines the host's IANA timezone name, used as the
+// container's default so it mirrors the host unless overridden. Tries $TZ,
+// then the /etc/localtime symlink target (works for both Linux's
+// /usr/share/zoneinfo/<Zone> and macOS's /var/db/timezone/zoneinfo/<Zone>
+// layouts, including distros that nest an extra posix/ or right/ segment
+// under zoneinfo/), then /etc/timezone (Debian-style hosts). Each candidate
+// is validated with time.LoadLocation before being returned: $TZ may hold a
+// POSIX TZ string (e.g. "<+12>-12", "UTC+5") rather than an IANA name, which
+// the container's tzdata can't resolve, so an unresolvable candidate is
+// skipped in favor of the next source rather than propagated — this value
+// also feeds the "timezone" validateFunc, and a resolution failure there
+// would abort every csb invocation on such a host. Falls back to "UTC",
+// which always resolves.
+func hostTimezone() string {
+	var candidates []string
+	if tz := os.Getenv("TZ"); tz != "" {
+		candidates = append(candidates, tz)
+	}
+	if target, err := os.Readlink("/etc/localtime"); err == nil {
+		const marker = "zoneinfo/"
+		if idx := strings.Index(target, marker); idx >= 0 {
+			zone := target[idx+len(marker):]
+			candidates = append(candidates, zone)
+			for _, prefix := range []string{"posix/", "right/"} {
+				if rest, ok := strings.CutPrefix(zone, prefix); ok {
+					candidates = append(candidates, rest)
+				}
+			}
+		}
+	}
+	if data, err := os.ReadFile("/etc/timezone"); err == nil {
+		if tz := strings.TrimSpace(string(data)); tz != "" {
+			candidates = append(candidates, tz)
+		}
+	}
+	for _, c := range candidates {
+		if _, err := time.LoadLocation(c); err == nil {
+			return c
+		}
+	}
+	return "UTC"
 }
 
 // parseFuncs backs parse:"name" tags; each func parses a raw string into the slice element type.
@@ -86,6 +133,13 @@ var validateFuncs = map[string]func(any) error{
 		s := v.(string)
 		if s != "amd64" && s != "arm64" {
 			return fmt.Errorf("invalid arch %q; expected amd64 or arm64", s)
+		}
+		return nil
+	},
+	"timezone": func(v any) error {
+		s := v.(string)
+		if _, err := time.LoadLocation(s); err != nil {
+			return fmt.Errorf("invalid timezone %q: %w", s, err)
 		}
 		return nil
 	},

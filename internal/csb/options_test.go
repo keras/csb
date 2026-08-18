@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -605,6 +606,49 @@ func TestValidateTags_AtDefaultOnSlice(t *testing.T) {
 	err := validateTags(reflect.TypeOf(bad{}))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "@")
+}
+
+// ── hostTimezone / Timezone option ───────────────────────────────────────────
+
+func TestHostTimezone_FromTZEnv(t *testing.T) {
+	t.Setenv("TZ", "Pacific/Auckland")
+	assert.Equal(t, "Pacific/Auckland", hostTimezone())
+}
+
+// TestHostTimezone_InvalidTZEnvFallsThrough verifies that a $TZ holding a
+// POSIX TZ string (legal for libc, but not an IANA name tzdata can resolve)
+// never gets returned as-is — it would fail the "timezone" validateFunc and
+// abort every csb invocation on such a host. hostTimezone must skip it and
+// fall through to the next source (ultimately "UTC"), never propagating an
+// unresolvable candidate.
+func TestHostTimezone_InvalidTZEnvFallsThrough(t *testing.T) {
+	t.Setenv("TZ", "<+12>-12")
+	got := hostTimezone()
+	assert.NotEqual(t, "<+12>-12", got)
+	_, err := time.LoadLocation(got)
+	assert.NoError(t, err, "hostTimezone must always return a resolvable zone")
+}
+
+func TestResolveOptions_TimezoneDefaultsToHost(t *testing.T) {
+	t.Setenv("TZ", "Europe/Berlin")
+	opts := resolveWith(t, nil, nil)
+	assert.Equal(t, "Europe/Berlin", opts.Timezone)
+}
+
+func TestResolveOptions_TimezoneCLIOverride(t *testing.T) {
+	t.Setenv("TZ", "Europe/Berlin")
+	cli := map[int]any{fieldIdx("Timezone"): "Asia/Tokyo"}
+	opts := resolveWith(t, cli, nil)
+	assert.Equal(t, "Asia/Tokyo", opts.Timezone)
+}
+
+func TestValidateFuncs_TimezoneAcceptsUTC(t *testing.T) {
+	assert.NoError(t, validateFuncs["timezone"]("UTC"))
+}
+
+func TestValidateFuncs_TimezoneRejectsInvalid(t *testing.T) {
+	err := validateFuncs["timezone"]("Not/AZone")
+	assert.Error(t, err)
 }
 
 // ── shQuote ──────────────────────────────────────────────────────────────────

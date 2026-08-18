@@ -1,7 +1,7 @@
 FROM debian:stable-slim
 
 RUN apt-get update && apt-get install -y \
-    bash-completion gosu libnss-wrapper tmux \
+    bash-completion gosu libnss-wrapper tmux tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Shell setup

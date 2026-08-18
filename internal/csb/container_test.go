@@ -514,6 +514,16 @@ func TestResolveEnv_TERMFromHost(t *testing.T) {
 	assert.Equal(t, "screen-256color", env["TERM"])
 }
 
+func TestResolveEnv_Timezone(t *testing.T) {
+	cfg := &Config{ConfigDir: t.TempDir()}
+	cfg.Runtime = "docker"
+	cfg.DefaultShell = "bash"
+	cfg.Timezone = "Asia/Tokyo"
+
+	env := envMap(ResolveEnv(cfg, NewRuntime("docker"), "", ""))
+	assert.Equal(t, "Asia/Tokyo", env["TZ"])
+}
+
 func TestResolveEnv_EnvForwardSet(t *testing.T) {
 	t.Setenv("MY_TOKEN", "secret")
 	cfg := &Config{ConfigDir: t.TempDir()}

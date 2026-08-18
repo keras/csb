@@ -63,8 +63,8 @@ default; never settable in YAML:
 one instead.
 
 Everything else — `--tmux`, `--shell`, `--addon`, `--mount`, `--publish`,
-`--arch`, `--env`, `--env-forward`, `--runtime`, `--motd`, `--host-network`,
-`--host-exec*`, and their env vars and YAML keys — is documented in
+`--arch`, `--timezone`, `--env`, `--env-forward`, `--runtime`, `--motd`,
+`--host-network`, `--host-exec*`, and their env vars and YAML keys — is documented in
 [Configuration](configuration.md), since the same flags can be set via
 `config.yaml` or environment variables and follow the same precedence rules.
 

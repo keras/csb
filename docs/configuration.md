@@ -69,6 +69,7 @@ the base list.
 | startup command | — (positional/`--`) | — | `default_cmd` | `<shell> -l` | overridden by any command given on the CLI |
 | addons | `--addon "NAME [ARGS…]"` (repeatable) | — | `addons` | `mise sudo` | see [Addons](addons.md) |
 | arch | `--arch ARCH` | `CSB_ARCH` | `arch` | host arch | `amd64` or `arm64`; needs QEMU/binfmt on the host when it differs from the host's own arch |
+| timezone | `--timezone TZ` | `CSB_TIMEZONE` | `timezone` | host timezone | IANA zone name (e.g. `America/New_York`); mirrors the host by default |
 | mount | `--mount SRC:DST[:MODE]` (repeatable) | — | `mount` | — | `~` expands host-side to `$HOME`, container-side to `/home/sandbox`; **mode defaults to `ro` when omitted** |
 | env-forward | `--env-forward NAME` (repeatable) | `CSB_ENV_FORWARD` (space-separated) | `env_forward` | — | forward these host env var *names* (and current values) into the container |
 | env | `--env KEY=VALUE` (repeatable) | `CSB_ENV` (space-separated) | `env` | — | inject literal `KEY=VALUE` pairs |
@@ -93,6 +94,7 @@ run `csb --help-config` — it stays in sync with the code by construction.
 | `CSB_CONFIG_DIR` | config directory (default `~/.config/csb`) |
 | `CSB_WORKSPACE` | host directory to mount (default: CWD) |
 | `CSB_ARCH` | container architecture |
+| `CSB_TIMEZONE` | container timezone (default: mirror the host's) |
 | `CSB_ENV_FORWARD` | space-separated host env var names to forward |
 | `CSB_ENV` | space-separated `KEY=VALUE` pairs to inject |
 | `CSB_PUBLISH` | space-separated publish specs |
