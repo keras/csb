@@ -1,4 +1,5 @@
-SHELL        := sh -o pipefail
+SHELL        := bash
+.SHELLFLAGS  := -o pipefail -c
 
 # Pin the Go toolchain so all `go` invocations below (build, mktar, test,
 # test-addons, clean) produce byte-identical output regardless of the
