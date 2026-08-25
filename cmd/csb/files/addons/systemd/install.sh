@@ -43,6 +43,11 @@ apt-get install -y --no-install-recommends systemd systemd-sysv dbus libpam-syst
 # units poke at hardware that isn't there; and tmp.mount would shadow the
 # container's existing /tmp with a fresh tmpfs (hiding what csb writes there, and
 # logging a "Directory /tmp to mount over is not empty" warning to the console).
+# binfmt_misc is kernel-global, not per-container. Under --privileged (podman
+# addon) systemd-binfmt.service flushes that shared table before it applies
+# /usr/lib/binfmt.d/*.conf. This deletes the host's qemu handlers, and every
+# amd64 container on the host then fails with "exec format error". csb needs no
+# binfmt, so mask the service and the automount that mounts the table.
 # Masking via symlink-to-/dev/null works without a running systemd, so it is
 # safe here at build time.
 for unit in \
@@ -54,6 +59,8 @@ for unit in \
     systemd-udev-trigger.service \
     systemd-modules-load.service \
     systemd-firstboot.service \
+    systemd-binfmt.service \
+    proc-sys-fs-binfmt_misc.automount \
     tmp.mount \
     ; do
     ln -sf /dev/null "/etc/systemd/system/$unit"

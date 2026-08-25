@@ -62,6 +62,10 @@ test "$(systemctl log-target)" = journal
 ! systemctl -q is-active console-getty.service
 ! systemctl -q is-active getty@tty1.service
 
+# systemd-binfmt never ran, so the host's shared binfmt_misc table is intact.
+# The mount is not checked: it needs --privileged, which this test cannot assume.
+! systemctl -q is-active systemd-binfmt.service
+
 # --- Non-interactive session shape -------------------------------------------
 
 # This path is the lightweight gosu drop, NOT a logind session: pam_systemd
@@ -85,6 +89,10 @@ test -f /etc/systemd/system.conf.d/csb-container.conf
 # Console/serial gettys are masked so they can't grab the user's pty.
 test "$(readlink /etc/systemd/system/getty.target)" = /dev/null
 test "$(readlink /etc/systemd/system/console-getty.service)" = /dev/null
+
+# binfmt is masked so csb never touches the host's shared binfmt_misc table.
+test "$(readlink /etc/systemd/system/systemd-binfmt.service)" = /dev/null
+test "$(readlink /etc/systemd/system/proc-sys-fs-binfmt_misc.automount)" = /dev/null
 
 # The interactive session enters through login(1), and pam_systemd must be in the
 # PAM session stack so logind registers a real session (XDG_RUNTIME_DIR, etc.).
