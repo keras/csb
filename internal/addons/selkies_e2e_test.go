@@ -51,6 +51,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
@@ -355,6 +356,107 @@ func TestSelkiesE2EStream(t *testing.T) {
 // negotiating over that relay proves whether media still connects.
 func TestSelkiesE2EStreamSystemd(t *testing.T) {
 	runSelkiesE2E(t, "systemd")
+}
+
+// TestSelkiesE2EHiDPI proves the HiDPI path with a real browser reporting
+// devicePixelRatio=2. Two things must happen, and only one of them used to:
+// Selkies renders the desktop at DEVICE pixels (1280x800 CSS becomes
+// 2560x1600) and then raises the desktop DPI to 96*2 to compensate. Without
+// the second, the picture is sharp but every label is half its physical size
+// — the whole symptom this covers.
+//
+// The DPI half is asserted from selkies' own log rather than by inspecting
+// X, so it exercises the real resize.py -> xfconf -> xfsettingsd path. That
+// path silently no-op'd under openbox, which had no xsettings daemon: it
+// logged "failed to find supported window manager to set DPI" and left the
+// desktop at 96. Both the success line and that failure text are checked,
+// because set_dpi can also report success while changing nothing.
+//
+// The metrics override is applied BEFORE navigating on purpose. The client
+// reports its pixel ratio in the HELLO meta the moment signalling opens
+// (signalling.js:183), and the server applies it right there
+// (__main__.py:649) — so first connect, not resize, is the path a real HiDPI
+// user takes and the one that has to work. Overriding after the stream is up
+// registers the session at scale 1 and proves nothing.
+func TestSelkiesE2EHiDPI(t *testing.T) {
+	sb := startSelkiesBrowser(t)
+	wsURL := sb.waitWSURL(t, 3*time.Minute)
+
+	allocCtx, cancelAlloc := chromedp.NewRemoteAllocator(context.Background(), wsURL, chromedp.NoModifyURL)
+	defer cancelAlloc()
+	ctx, cancel := chromedp.NewContext(allocCtx)
+	defer cancel()
+	runCtx, runCancel := context.WithTimeout(ctx, 4*time.Minute)
+	defer runCancel()
+
+	if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		return emulation.SetDeviceMetricsOverride(1280, 800, 2, false).Do(ctx)
+	})); err != nil {
+		t.Fatalf("set device metrics override: %v", err)
+	}
+	if err := chromedp.Run(runCtx, chromedp.Navigate("http://localhost:8080/")); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+
+	var dpr float64
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(`window.devicePixelRatio`, &dpr)); err != nil {
+		t.Fatalf("read devicePixelRatio: %v", err)
+	}
+	if dpr != 2 {
+		t.Fatalf("devicePixelRatio override did not take: got %v, want 2", dpr)
+	}
+
+	// Device pixels, not CSS pixels: 1280x800 at 2x should ask for 2560x1600.
+	if err := waitJS(runCtx, 90*time.Second,
+		`(function(){return !!(window.webrtc&&webrtc.input)&&webrtc.input.getWindowResolution()[0]>=2000;})()`); err != nil {
+		var got string
+		_ = chromedp.Run(runCtx, chromedp.Evaluate(
+			`window.webrtc&&webrtc.input?JSON.stringify(webrtc.input.getWindowResolution()):"no client"`, &got))
+		t.Fatalf("resolution did not scale to device pixels (got %s): %v\n%s", got, err, sb.dumpLogs())
+	}
+
+	var logText string
+	deadline := time.Now().Add(120 * time.Second)
+	for time.Now().Before(deadline) {
+		b, _ := os.ReadFile(filepath.Join(sb.logDir, "selkies.log"))
+		logText = string(b)
+		if strings.Contains(logText, "Setting DPI to: 192") {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	// The browser must have reported 2x in its session meta...
+	if !strings.Contains(logText, "'scale': 2") {
+		t.Fatalf("client never reported scale 2 in its session meta\n%s", tail(logText, 30))
+	}
+	// ...and the server must have actually applied 96*2.
+	if !strings.Contains(logText, "Setting DPI to: 192") {
+		t.Fatalf("selkies never set DPI to 192 for devicePixelRatio=2\n%s", tail(logText, 30))
+	}
+	for _, bad := range []string{"failed to set DPI", "failed to find supported window manager"} {
+		if strings.Contains(logText, bad) {
+			t.Fatalf("selkies logged %q — the DPI change did not apply\n%s", bad, tail(logText, 30))
+		}
+	}
+	t.Logf("HiDPI ok: devicePixelRatio=2 -> device-pixel resolution + 192 DPI")
+}
+
+// waitJS polls a JavaScript boolean expression in the page until it is true.
+// Evaluation errors are treated as "not ready yet": the page reloads during
+// stream setup, so a transient failure is expected rather than fatal.
+func waitJS(ctx context.Context, timeout time.Duration, expr string) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		var ok bool
+		c, cancelEval := context.WithTimeout(ctx, 5*time.Second)
+		err := chromedp.Run(c, chromedp.Evaluate(expr, &ok))
+		cancelEval()
+		if err == nil && ok {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out after %s waiting for: %s", timeout, expr)
 }
 
 func runSelkiesE2E(t *testing.T, extraAddons ...string) {

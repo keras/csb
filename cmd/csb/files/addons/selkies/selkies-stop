@@ -3,7 +3,10 @@ set -euo pipefail
 
 _rundir="$HOME/.selkies"
 
-for _name in selkies coturn openbox Xorg; do
+# Tear the desktop down before Xorg: the XFCE components lose their
+# connection when the display goes away and would log a crash on the way
+# out. dbus-daemon goes last of the session, since the others talk to it.
+for _name in selkies coturn xfdesktop xfce4-panel xfwm4 xfsettingsd dbus Xorg; do
     _pidfile="$_rundir/${_name}.pid"
     if [ -f "$_pidfile" ]; then
         _pid=$(cat "$_pidfile" 2>/dev/null || true)
@@ -35,6 +38,11 @@ pkill -x turnserver 2>/dev/null || true
 # Xorg leaves its lock + socket behind on a signal-kill; remove them so a
 # subsequent selkies-start recreates display :1 instead of skipping it.
 rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
+
+# Same for the session bus socket: dbus-daemon does not unlink it when
+# signalled, and a leftover socket makes clients block trying to reach a
+# bus that is gone.
+rm -f "$_rundir/dbus.sock"
 
 # Mirror selkies-start's uid branch so we kill the daemon as the user that
 # owns it (selkies-audio when root, otherwise the current user).

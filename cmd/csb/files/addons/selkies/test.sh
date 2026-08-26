@@ -13,7 +13,8 @@ set -euo pipefail
 #       gst-launch-1.0 -q pulsesrc device=csb-audio.monitor ! \
 #       audio/x-raw ! audioconvert ! fakesink num-buffers=10; selkies-stop'
 
-command -v Xorg openbox selkies-gstreamer selkies-start selkies-stop curl pgrep pactl gst-launch-1.0 xsel \
+command -v Xorg xfwm4 xfsettingsd xfconf-query xfce4-panel xfdesktop dbus-daemon xrdb xprop \
+    selkies-gstreamer selkies-start selkies-stop curl pgrep pactl gst-launch-1.0 xsel \
     xrandr cvt turnserver turnutils_uclient turnutils_peer >/dev/null
 
 # The entrypoint must export PULSE_SERVER so apps play into the csb-audio
@@ -44,7 +45,9 @@ wait_web && ok=1
 
 if [ "$ok" != "1" ]; then
     echo "=== Xorg.log ==="; cat "$HOME/.selkies/Xorg.log" 2>/dev/null || echo "(missing)"
-    echo "=== openbox.log ==="; cat "$HOME/.selkies/openbox.log" 2>/dev/null || echo "(missing)"
+    for _l in dbus xfsettingsd xfwm4 xfce4-panel xfdesktop; do
+        echo "=== ${_l}.log ==="; cat "$HOME/.selkies/${_l}.log" 2>/dev/null || echo "(missing)"
+    done
     echo "=== pulseaudio.log ==="; cat "$HOME/.selkies/pulseaudio.log" 2>/dev/null || echo "(missing)"
     echo "=== selkies.log ==="; cat "$HOME/.selkies/selkies.log" 2>/dev/null || echo "(missing)"
     echo "=== processes ==="
@@ -102,6 +105,81 @@ xrandr --output "$_out" --mode 1920x1080 2>/dev/null \
 _cur=$(xrandr 2>/dev/null | sed -n 's/.*current \([0-9]*\) x \([0-9]*\).*/\1x\2/p')
 echo "current resolution after resize: ${_cur}"
 [ "$_cur" = "1920x1080" ] || resize_fail "display did not resize to 1920x1080 (got '${_cur}')"
+
+# HiDPI envelope. A 2x client asks for twice its window size, so an ordinary
+# 2560x1440 browser window requests 5120x2880 — past what a 4K-sized
+# framebuffer can hold. That failure is not graceful: RRSetScreenSize returns
+# BadMatch and leaves the display with no current mode at all. xrandr's
+# reported "maximum" does not reveal the limit (it reads 32767x32767), so the
+# only honest check is to actually switch to it.
+_ml=$(cvt -r 5120 2880 60 | sed -n 's/^[[:space:]]*Modeline[[:space:]]*"[^"]*"[[:space:]]*//p')
+[ -n "$_ml" ] || resize_fail "cvt produced no modeline for 5120x2880"
+xrandr --newmode 5120x2880 $_ml 2>/dev/null || true
+xrandr --addmode "$_out" 5120x2880 2>/dev/null \
+    || resize_fail "xrandr could not add mode 5120x2880"
+xrandr --output "$_out" --mode 5120x2880 2>/dev/null \
+    || resize_fail "could not switch $_out to 5120x2880 (VideoRam too small for HiDPI?)"
+_cur=$(xrandr 2>/dev/null | sed -n 's/.*current \([0-9]*\) x \([0-9]*\).*/\1x\2/p')
+[ "$_cur" = "5120x2880" ] || resize_fail "display did not resize to 5120x2880 (got '${_cur}')"
+echo "HiDPI envelope ok: reached ${_cur}"
+xrandr --output "$_out" --mode 1920x1080 2>/dev/null || true
+
+# ── HiDPI / DPI scaling ───────────────────────────────────────────────
+# A HiDPI browser renders the desktop at device pixels and scales it back
+# down, so text is half-size unless the desktop raises its DPI to match.
+# Selkies does that via resize.py's set_dpi(), which needs xfconf-query AND
+# a live xfsettingsd to push the value into RESOURCE_MANAGER. Drive the real
+# function rather than a reimplementation of it — set_dpi returning True
+# while nothing changes is exactly the failure this guards.
+dpi_fail() {
+    echo "DPI CHECK FAILED: $1"
+    echo "=== xrdb ==="; xrdb -query 2>&1 || true
+    echo "=== xsettings ==="; xfconf-query -c xsettings -l -v 2>&1 || true
+    for _l in dbus xfsettingsd xfwm4; do
+        echo "=== ${_l}.log ==="; cat "$HOME/.selkies/${_l}.log" 2>/dev/null || echo "(missing)"
+    done
+    selkies-stop || true
+    exit 1
+}
+
+pgrep -x xfsettingsd >/dev/null || dpi_fail "xfsettingsd not running"
+pgrep -x xfwm4 >/dev/null || dpi_fail "xfwm4 not running"
+
+# The window manager must have claimed the display, or nothing is decorated.
+_wmwin=$(xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -o '0x[0-9a-f]*' || true)
+[ -n "$_wmwin" ] || dpi_fail "no window manager registered on :1"
+xprop -id "$_wmwin" _NET_WM_NAME 2>/dev/null | grep -qi xfwm4 \
+    || dpi_fail "window manager on :1 is not xfwm4"
+
+_sp=$(python3 -c "import selkies_gstreamer,os;print(os.path.dirname(selkies_gstreamer.__file__))")
+python3 -c "
+import sys
+sys.path.insert(0, '$_sp')
+from resize import set_dpi, set_cursor_size
+sys.exit(0 if (set_dpi(192) and set_cursor_size(32)) else 1)
+" || dpi_fail "selkies' own set_dpi()/set_cursor_size() reported failure"
+
+# The value has to reach RESOURCE_MANAGER, which is what X clients read.
+# xfconf storing it is not enough — that is the silent-success mode.
+for _ in $(seq 1 50); do
+    xrdb -query 2>/dev/null | grep -qE '^Xft\.dpi:[[:space:]]*192' && break
+    sleep 0.1
+done
+xrdb -query 2>/dev/null | grep -qE '^Xft\.dpi:[[:space:]]*192' \
+    || dpi_fail "set_dpi(192) did not reach RESOURCE_MANAGER as Xft.dpi"
+echo "DPI scaling ok: Xft.dpi=$(xrdb -query | awk '/^Xft.dpi:/{print $2}')"
+
+# xterm must use an Xft face; a core bitmap font ignores Xft.dpi outright,
+# so the shipped terminal would not scale with everything else.
+xrdb -query 2>/dev/null | grep -qi '^xterm\*faceName:' \
+    || dpi_fail "xterm has no Xft faceName; it would ignore Xft.dpi"
+
+python3 -c "
+import sys
+sys.path.insert(0, '$_sp')
+from resize import set_dpi
+sys.exit(0 if set_dpi(96) else 1)
+" || dpi_fail "could not restore DPI to 96"
 
 # Audio path must actually work — this is the whole point of the addon.
 # Connect to PulseAudio over the same anonymous socket selkies-start uses;
@@ -238,11 +316,17 @@ fi
 # ── Idempotency: a second selkies-start must not relaunch daemons. coturn
 #    legitimately forks several worker processes, so assert the recorded
 #    pids are unchanged rather than counting processes. ─────────────────
-_p1=$(cat "$HOME/.selkies/coturn.pid"); _s1=$(cat "$HOME/.selkies/selkies.pid"); _x1=$(cat "$HOME/.selkies/Xorg.pid")
+_before=$(for _n in coturn selkies Xorg dbus xfsettingsd xfwm4 xfce4-panel xfdesktop; do
+    printf '%s=%s ' "$_n" "$(cat "$HOME/.selkies/${_n}.pid" 2>/dev/null)"
+done)
 selkies-start
-_p2=$(cat "$HOME/.selkies/coturn.pid"); _s2=$(cat "$HOME/.selkies/selkies.pid"); _x2=$(cat "$HOME/.selkies/Xorg.pid")
-if [ "$_p1" != "$_p2" ] || [ "$_s1" != "$_s2" ] || [ "$_x1" != "$_x2" ]; then
-    echo "IDEMPOTENCY FAILED: pids changed on 2nd start (coturn $_p1->$_p2, selkies $_s1->$_s2, Xorg $_x1->$_x2)"
+_after=$(for _n in coturn selkies Xorg dbus xfsettingsd xfwm4 xfce4-panel xfdesktop; do
+    printf '%s=%s ' "$_n" "$(cat "$HOME/.selkies/${_n}.pid" 2>/dev/null)"
+done)
+if [ "$_before" != "$_after" ]; then
+    echo "IDEMPOTENCY FAILED: pids changed on 2nd start"
+    echo "  before: $_before"
+    echo "  after:  $_after"
     selkies-stop || true; exit 1
 fi
 

@@ -28,7 +28,7 @@ set -euo pipefail
 SELKIES_VERSION=1.6.2
 
 apt-get install -y --no-install-recommends \
-    openbox xterm \
+    xfce4 xterm \
     pulseaudio \
     coturn \
     xserver-xorg-core xserver-xorg-video-dummy xserver-xorg-legacy \
@@ -111,6 +111,20 @@ ln -sf /dev/null /etc/systemd/system/coturn.service
 # it is ever missing rather than shipping a desktop that cannot resize.
 command -v cvt >/dev/null \
     || { echo "selkies install: cvt not found (xcvt package missing); dynamic resize needs it" >&2; exit 1; }
+
+# A HiDPI browser asks Selkies for a DEVICE-pixel resolution (window size x
+# devicePixelRatio) and displays it scaled back down, so the desktop must
+# raise its DPI to match or every label renders at half its physical size.
+# resize.py applies that through xfconf-query, and only xfsettingsd — the
+# XSETTINGS manager — turns the stored value into the Xft.dpi / Xcursor.size
+# resources apps actually read. Both must exist. Guard them separately: with
+# xfconf-query present but xfsettingsd missing, the query still exits 0, so
+# selkies logs a successful DPI change while the desktop stays at 96 DPI.
+# A silent lie is worse than a build failure.
+command -v xfconf-query >/dev/null \
+    || { echo "selkies install: xfconf-query not found; DPI scaling needs it" >&2; exit 1; }
+command -v xfsettingsd >/dev/null \
+    || { echo "selkies install: xfsettingsd not found; nothing would apply the DPI" >&2; exit 1; }
 
 mkdir -p /opt/gst-web
 curl -fsSL "$_web_url" -o "$_tmpdir/$_web_tgz"

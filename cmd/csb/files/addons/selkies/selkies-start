@@ -8,6 +8,20 @@ if ! [[ "$CSB_SELKIES_GEOMETRY" =~ ^[0-9]+x[0-9]+x[0-9]+$ ]]; then
 fi
 IFS=x read -r _width _height _depth <<<"$CSB_SELKIES_GEOMETRY"
 
+# Desktop scale factor, as a devicePixelRatio-style multiplier of 96 DPI.
+# This is only the INITIAL value: a browser reports its own devicePixelRatio
+# in the HELLO meta as soon as it connects, and Selkies applies that over
+# this. So it governs the desktop before the first connection — which is
+# what apps launched from the shell beforehand will see — and gives a way to
+# pin the scale for them. Without it the desktop would start at whatever
+# value a previous session left in the persistent xfconf store.
+: "${CSB_SELKIES_DPI_SCALE:=1}"
+if ! [[ "$CSB_SELKIES_DPI_SCALE" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    echo "selkies-start: invalid CSB_SELKIES_DPI_SCALE '$CSB_SELKIES_DPI_SCALE'" \
+         "(expected a number, e.g. 1 or 2)" >&2
+    exit 1
+fi
+
 # With SELKIES_ENABLE_RESIZE=true (below) Selkies resizes the X display to
 # match the browser window on the fly by adding RANDR modes at runtime
 # (xrandr --newmode/--addmode/--output). The Xorg dummy driver allows this
@@ -145,11 +159,88 @@ if ! _running Xorg Xorg; then
     fi
 fi
 
-# Start the window manager (idempotent).
-if ! _running openbox openbox; then
-    openbox > "$_rundir/openbox.log" 2>&1 &
-    echo $! > "$_rundir/openbox.pid"
+# ── XFCE desktop session ──────────────────────────────────────────────
+# Started component by component rather than via startxfce4/xfce4-session:
+# each daemon then gets its own pidfile and identity check, matching how
+# Xorg, coturn and selkies are supervised here. xfce4-session would also
+# try to talk to a session manager that does not exist in the sandbox.
+
+# Private D-Bus session bus on a FIXED path. xfconf and xfsettingsd need a
+# session bus, and the path has to be predictable so entrypoint.sh can point
+# the user's shell at the same one (as it does for PULSE_SERVER) — apps then
+# share the desktop's theme, DPI and notifications. dbus-launch picks a
+# random path, which could not be exported that way.
+_dbus_socket="$_rundir/dbus.sock"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=${_dbus_socket}"
+if ! _running dbus dbus-daemon; then
+    rm -f "$_dbus_socket"
+    dbus-daemon --session --nofork --address="$DBUS_SESSION_BUS_ADDRESS" \
+        > "$_rundir/dbus.log" 2>&1 &
+    echo $! > "$_rundir/dbus.pid"
+    for _ in $(seq 1 50); do
+        [ -S "$_dbus_socket" ] && break
+        sleep 0.1
+    done
+    if [ ! -S "$_dbus_socket" ]; then
+        echo "selkies-start: D-Bus session bus socket never appeared" >&2
+        cat "$_rundir/dbus.log" >&2 2>/dev/null || true
+        exit 1
+    fi
 fi
+
+# xfsettingsd is what makes HiDPI work. Selkies applies the browser's
+# devicePixelRatio by writing /Xft/DPI through xfconf-query; only this
+# daemon turns that into the Xft.dpi and Xcursor.size resources that X
+# clients actually read. Without it xfconf-query still exits 0 and selkies
+# reports success while nothing changes.
+if ! _running xfsettingsd xfsettingsd; then
+    xfsettingsd --no-daemon > "$_rundir/xfsettingsd.log" 2>&1 &
+    echo $! > "$_rundir/xfsettingsd.pid"
+fi
+# Wait until the xsettings channel answers before writing the seed below.
+# This waits on xfconfd, the D-Bus-activated store — not on xfsettingsd —
+# because that is what a write needs to succeed. The two can come up in
+# either order: xfsettingsd loads the stored value at startup, so a seed
+# written first is still applied.
+for _ in $(seq 1 100); do
+    xfconf-query -c xsettings -l >/dev/null 2>&1 && break
+    sleep 0.1
+done
+
+# Compositing OFF: there is no GPU here, and the desktop is captured and
+# re-encoded anyway, so a compositor only burns CPU. It also conflicts with
+# the Xorg dummy driver, which xfwm4 reports as "another compositing
+# manager is running".
+if ! _running xfwm4 xfwm4; then
+    xfwm4 --compositor=off > "$_rundir/xfwm4.log" 2>&1 &
+    echo $! > "$_rundir/xfwm4.pid"
+fi
+
+# XFCE_PANEL_MIGRATE_DEFAULT makes the panel adopt the default layout
+# instead of blocking on its first-run "default or empty panel?" chooser,
+# which nobody can answer before the desktop is streaming.
+if ! _running xfce4-panel xfce4-panel; then
+    XFCE_PANEL_MIGRATE_DEFAULT=1 xfce4-panel > "$_rundir/xfce4-panel.log" 2>&1 &
+    echo $! > "$_rundir/xfce4-panel.pid"
+fi
+
+if ! _running xfdesktop xfdesktop; then
+    xfdesktop > "$_rundir/xfdesktop.log" 2>&1 &
+    echo $! > "$_rundir/xfdesktop.pid"
+fi
+
+# Seed the initial DPI (see CSB_SELKIES_DPI_SCALE above). 96 DPI and a
+# 16px cursor are the 1.0 baseline, matching resize.py's own arithmetic.
+_dpi=$(awk -v s="$CSB_SELKIES_DPI_SCALE" 'BEGIN{printf "%d", 96 * s}')
+_cursor=$(awk -v s="$CSB_SELKIES_DPI_SCALE" 'BEGIN{printf "%d", 16 * s}')
+xfconf-query -c xsettings -p /Xft/DPI -s "$_dpi" --create -t int 2>/dev/null || true
+xfconf-query -c xsettings -p /Gtk/CursorThemeSize -s "$_cursor" --create -t int 2>/dev/null || true
+
+# xterm draws with a core bitmap font unless given an Xft face, and bitmap
+# fonts ignore Xft.dpi entirely — it would sit at a fixed physical size
+# while every GTK app around it scaled. Give it a face so it follows the
+# DPI too. Merged as an X resource, so only xterms started later pick it up.
+printf 'xterm*faceName: DejaVu Sans Mono\nxterm*faceSize: 10\n' | xrdb -merge
 
 # Start PulseAudio. It loads default.pa (generated here so the socket
 # path matches the chosen runtime dir), which opens the anonymous socket

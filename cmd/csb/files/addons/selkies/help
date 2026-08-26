@@ -1,6 +1,6 @@
 selkies — desktop over WebRTC (Selkies, with synchronized audio)
 
-Run a virtual desktop (Xorg dummy + openbox) streamed to your browser via
+Run a virtual desktop (Xorg dummy + XFCE) streamed to your browser via
 WebRTC using Selkies-GStreamer, including audio from a PulseAudio sink:
 
     selkies-start      start the desktop + Selkies, prints the URL
@@ -42,9 +42,28 @@ anywhere on the page or the speaker icon to start hearing audio.
 
 The desktop resolution follows your browser window automatically: Selkies
 resizes the remote display to match the window (rendering at native
-resolution, not scaling the stream), up to a maximum of 3840x2160 (4K).
+resolution, not scaling the stream), up to a maximum of 5120x2880 (5K).
 Set the INITIAL resolution (shown until a browser connects) before
 selkies-start via CSB_SELKIES_GEOMETRY (default 1280x800x24; the depth
 field is accepted but the desktop runs at 24-bit):
 
     CSB_SELKIES_GEOMETRY=1920x1080x24 selkies-start
+
+HiDPI displays are handled automatically. On a Retina-class screen the
+browser reports a devicePixelRatio above 1, and Selkies renders the
+desktop at DEVICE pixels — a 1440x900 window becomes a 2880x1800 desktop
+— so the picture stays sharp instead of being upscaled. The desktop DPI
+is raised to match, so text keeps its physical size rather than shrinking
+by half. That is why the resolution envelope is 5K: a 2x client doubles
+whatever it asks for.
+
+The browser reports its scale as soon as it connects, so this applies
+from the first page load — you do not need to resize anything. Set the
+INITIAL scale, used before any browser connects, with
+CSB_SELKIES_DPI_SCALE (default 1; 2 means 192 DPI):
+
+    CSB_SELKIES_DPI_SCALE=2 selkies-start
+
+Only apps started AFTER a scale change pick up the new DPI. If you launch
+an app from the shell before connecting a browser, and the browser then
+reports a different scale, restart the app to pick up the new size.
