@@ -1,7 +1,7 @@
-selkies — desktop over WebRTC (Selkies, with synchronized audio)
+selkies — desktop in your browser (Selkies, with synchronized audio)
 
-Run a virtual desktop (Xorg dummy + XFCE) streamed to your browser via
-WebRTC using Selkies-GStreamer, including audio from a PulseAudio sink:
+Run a virtual desktop (Xorg dummy + XFCE) streamed to your browser over
+Selkies' WebSocket transport, including audio from a PulseAudio sink:
 
     selkies-start      start the desktop + Selkies, prints the URL
     selkies-stop       tear it down
@@ -22,23 +22,13 @@ who can reach the published port gets in, so do not bind it to a public
 address. (Credentials cannot be embedded in the URL: the web client's
 relative fetch() calls fail on URLs with embedded credentials.)
 
-WebRTC media is relayed through a LOCAL coturn TURN server bundled in
-the addon — no public STUN/TURN is used, and it works regardless of
-network topology (Linux, a macOS VM, or a remote host). coturn listens
-on TCP 3478 and is auto-published on 127.0.0.1:3478 (a fixed mapping, so
-the same turn:127.0.0.1:3478 resolves from both the host browser and the
-in-container streamer). All ICE is forced to relay through it
-(iceTransportPolicy=relay). It is bound to 127.0.0.1 only; like the web
-port, treat it as localhost-only and do not expose it publicly.
+Video and audio share that one TCP port, so nothing else needs publishing
+and no STUN/TURN server is involved. It works the same on Linux, a macOS VM
+or a remote host.
 
-The TURN credentials default to selkies / csbturn; override before
-selkies-start with CSB_SELKIES_TURN_USER and CSB_SELKIES_TURN_PASSWORD if
-desired. Note these creds are NOT the security boundary — the localhost-only
-publish of both 8080 and 3478 is. Don't expose either port publicly.
-
-Audio and video are streamed together over WebRTC. Most browsers block
-autoplaying audio with sound until you interact with the page — click
-anywhere on the page or the speaker icon to start hearing audio.
+Most browsers block autoplaying audio with sound until you interact with
+the page — click anywhere on the page or the speaker icon to start hearing
+audio.
 
 The desktop resolution follows your browser window automatically: Selkies
 resizes the remote display to match the window (rendering at native
@@ -67,3 +57,6 @@ CSB_SELKIES_DPI_SCALE (default 1; 2 means 192 DPI):
 Only apps started AFTER a scale change pick up the new DPI. If you launch
 an app from the shell before connecting a browser, and the browser then
 reports a different scale, restart the app to pick up the new size.
+
+Logs for each part of the desktop are in ~/.selkies/ (selkies.log,
+Xorg.log, xfce4-session.log, pulseaudio.log).

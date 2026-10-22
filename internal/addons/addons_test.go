@@ -24,8 +24,9 @@ var (
 // reapContainer force-removes any csb container carrying the given config-dir
 // label. csb forwards graceful signals to the container it supervises, but a
 // SIGKILL skips that, leaving conmon holding the container and its published
-// ports (e.g. selkies' coturn on 3478) so the next test fails to bind. The
-// config-dir label is unique per test, so this reaps exactly that container.
+// ports (e.g. the selkies e2e test's DevTools port 9222) so the next test
+// fails to bind. The config-dir label is unique per test, so this reaps
+// exactly that container.
 func reapContainer(configDir string) {
 	cli := "docker"
 	if _, err := exec.LookPath("docker"); err != nil {

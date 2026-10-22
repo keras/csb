@@ -1,10 +1,9 @@
 //go:build addons
 
 // True end-to-end test for the selkies addon: it drives a real headless
-// Chromium against the running Selkies web client and asserts the WebRTC video
-// stream actually negotiates and keeps decoding frames — the whole
-// X → GStreamer → coturn → ICE → browser-decode path, not just "the server
-// processes are alive".
+// Chromium against the running Selkies web client and asserts the video stream
+// actually connects and keeps decoding frames — the whole X → pixelflux →
+// WebSocket → browser-decode path, not just "the server processes are alive".
 //
 // Architecture. Chromium runs *inside* the selkies container (pulled in via the
 // packages addon), because the test host has no browser. The container command
@@ -13,28 +12,23 @@
 // loopback only, which podman's port-forward can't reach). The Go test connects
 // chromedp to that endpoint as a RemoteAllocator, opens a tab, and navigates to
 // the in-container http://localhost:8080/. So the browser sits where selkies
-// does and exercises the real media pipeline over the coturn relay; it does NOT
-// cover the published-8080 host hop (a deliberate scope cut).
+// does and exercises the real media pipeline; it does NOT cover the
+// published-8080 host hop (a deliberate scope cut).
 //
-// Success signal: frames advancing, not pixels. Headless Chromium with software
-// rendering (--disable-gpu) does not composite WebRTC <video> into a 2D canvas
-// or a CDP screenshot — both read back black even while frames decode — so a
-// pixel-fidelity check is unreliable here (it would need a headed/GPU run). The
-// reliable browser-side proof is a steadily *rising* framesDecoded, which also
-// directly catches the flakiness modes that matter: stalls and freezes. A tiny
-// on-screen xterm keeps the damage-based capture producing frames so an idle
-// desktop isn't mistaken for a stall.
+// Success signal: frames advancing. A hook around the page's VideoDecoder counts
+// the frames the client decodes, so a steadily *rising* count proves the
+// stream is flowing and decodable, and directly catches the flakiness modes
+// that matter: stalls and freezes. A tiny on-screen xterm keeps the
+// damage-based capture producing frames so an idle desktop isn't mistaken for
+// a stall.
 //
 // Flakiness instrument, not a pass/retry gate. Real selkies usage is flaky, and
 // the point is to *characterize* that. It runs the connect→stream cycle N times
 // (CSB_SELKIES_E2E_ATTEMPTS, default 3; crank it up locally), and every attempt
-// is a recorded data point with a stage classifier — no-signaling | no-ice |
-// ice-failed | connected-no-frames | frozen | ok — plus getStats
-// (framesDecoded/dropped, packetsLost, the nominated ICE candidate pair) and
-// milestone timings. On failure it dumps the browser console and the
-// server-side logs (bind-mounted out of the container). A flaky run then reports
-// *where* it stalled, e.g. "2/10 stuck at no-ice, candidate pair never
-// nominated", which is the actionable signal.
+// is a recorded data point with a stage classifier — no-client | no-socket |
+// no-frames | frozen | ok — plus milestone timings. On failure it dumps the
+// browser console and the server-side logs (bind-mounted out of the container).
+// A flaky run then reports *where* it stalled.
 package addons_test
 
 import (
@@ -74,13 +68,24 @@ const cdpPort = 9222 // fixed on both sides so the published ws URL resolves as-
 const selkiesBrowserScript = `set -e
 selkies-start
 # Keep something drawing on the desktop so the stream keeps producing frames.
-# selkies captures via damage-based ximagesrc, so a static screen emits little
-# XDamage and the encoder goes idle — which would look identical to a stall to
-# the frames-advance check below. A tiny xterm printing on a timer generates
-# continuous damage, so a healthy pipeline shows a steadily rising framesDecoded.
+# selkies captures on damage, so a static screen emits little and the encoder
+# goes idle — which would look identical to a stall to the frames-advance
+# check below. A tiny xterm printing on a timer generates continuous damage,
+# so a healthy pipeline shows a steadily rising decoded-frame count.
 export DISPLAY=:1
 xterm -e bash -c 'while :; do printf .; sleep 0.1; done' &
-chromium \
+# Publish the real display state for the host to read through the ~/.selkies
+# bind mount: the DPI that X clients see and the current resolution. This is
+# ground truth for the HiDPI test, independent of what selkies logs.
+( while :; do
+    echo "dpi=$(xrdb -query 2>/dev/null | awk '/^Xft.dpi:/{print $2}') res=$(xrandr 2>/dev/null | sed -n 's/.*current \([0-9]*\) x \([0-9]*\),.*/\1x\2/p')" \
+      > "$HOME/.selkies/display.txt.tmp" && mv "$HOME/.selkies/display.txt.tmp" "$HOME/.selkies/display.txt"
+    sleep 0.5
+  done ) &
+# csb preloads libnss_wrapper into every process to give the mapped host user
+# a passwd entry. Chromium hangs at startup under it and never opens its
+# DevTools port, so run it without the preload.
+env -u LD_PRELOAD chromium \
   --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage \
   --remote-debugging-port=9223 --remote-allow-origins=* \
   --user-data-dir="$HOME/.selkies/chrome" \
@@ -91,109 +96,55 @@ for _ in $(seq 1 150); do
 done
 exec socat TCP-LISTEN:9222,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:9223`
 
-// hookScript is installed before navigation so it captures every
-// RTCPeerConnection the Selkies client constructs; the poll reads them back.
+// hookScript is installed before navigation so it wraps the page's
+// VideoDecoder and counts the frames the Selkies client decodes. Frames of the
+// client's own 320x240 codec-support probe are ignored; the desktop is larger.
 const hookScript = `(function(){
-  window.__csb = { pcs: [], events: [] };
-  var Orig = window.RTCPeerConnection;
+  window.__csb = { frames: 0, vw: 0, vh: 0 };
+  var Orig = window.VideoDecoder;
   if (!Orig) return;
-  var idx = 0;
-  function wrap(pc){
-    var id = idx++, t0 = performance.now();
-    function mark(k, v){ window.__csb.events.push({pc: id, t: Math.round(performance.now()-t0), k: k, v: String(v==null?'':v)}); }
-    mark('pc', 'created');
-    pc.addEventListener('icegatheringstatechange', function(){ mark('gather', pc.iceGatheringState); });
-    pc.addEventListener('iceconnectionstatechange', function(){ mark('ice', pc.iceConnectionState); });
-    pc.addEventListener('icecandidate', function(e){ if (e.candidate) mark('cand', e.candidate.type+'/'+(e.candidate.protocol||'')); });
-    ['createOffer','createAnswer','setLocalDescription','setRemoteDescription'].forEach(function(m){
-      var orig = pc[m];
-      pc[m] = function(){ var r = orig.apply(pc, arguments); try { Promise.resolve(r).then(function(){ mark(m, 'ok'); }, function(){}); } catch (e) {} return r; };
-    });
-    return pc;
+  function Wrapped(init){
+    var out = init.output;
+    var wrapped = Object.assign({}, init, { output: function(f){
+      if (f.codedWidth > 320) { window.__csb.frames++; window.__csb.vw = f.displayWidth; window.__csb.vh = f.displayHeight; }
+      return out.apply(this, arguments);
+    }});
+    return new Orig(wrapped);
   }
-  window.RTCPeerConnection = function(){
-    var pc = new (Function.prototype.bind.apply(Orig, [null].concat([].slice.call(arguments))));
-    window.__csb.pcs.push(pc);
-    return wrap(pc);
-  };
-  window.RTCPeerConnection.prototype = Orig.prototype;
+  Wrapped.prototype = Orig.prototype;
+  Wrapped.isConfigSupported = Orig.isConfigSupported.bind(Orig);
+  window.VideoDecoder = Wrapped;
 })();`
 
-// pollScript returns the current pipeline state as JSON, up to the point of
-// "streaming" (ICE connected + video frames decoding). The pixel-fidelity check
-// is deliberately NOT done here: a 2D-canvas getImageData() of the <video> reads
-// back black under headless Chromium with --disable-gpu, even while frames
-// decode. The Go side instead grabs a CDP screenshot (which captures the real
-// composited frame) and analyzes it.
-const pollScript = `(async () => {
-  var out = {stage:'no-signaling', ice:'', frames:0, dropped:0, pktloss:0, vw:0, vh:0, cand:'', pcs:0};
-  var pcs = (window.__csb && window.__csb.pcs) || [];
-  out.pcs = pcs.length;
-  if (pcs.length === 0) return out;
-  var pc = pcs[0];
-  out.ice = pc.iceConnectionState || '';
-  try {
-    var stats = await pc.getStats();
-    stats.forEach(function(r){
-      if (r.type === 'inbound-rtp' && r.kind === 'video') {
-        out.frames = r.framesDecoded || 0;
-        out.dropped = r.framesDropped || 0;
-        out.pktloss = r.packetsLost || 0;
-      }
-      if (r.type === 'candidate-pair' && r.nominated) { out.cand = r.state || ''; }
-    });
-  } catch (e) {}
-  if (out.ice === 'failed') { out.stage = 'ice-failed'; return out; }
-  if (out.ice !== 'connected' && out.ice !== 'completed') { out.stage = 'no-ice'; return out; }
-  var v = document.querySelector('video');
-  if (v) { out.vw = v.videoWidth||0; out.vh = v.videoHeight||0; }
-  if (out.frames === 0) { out.stage = 'connected-no-frames'; return out; }
-  out.stage = 'streaming';
-  out.events = (window.__csb && window.__csb.events) || [];
+// pollScript returns the current pipeline state as JSON. window.selkiesTransport
+// is the client's data socket (or its proxy to a socket worker); readyState 1
+// means open.
+const pollScript = `(() => {
+  var out = {stage:'no-client', ws:-1, frames:0, vw:0, vh:0, decoder: typeof VideoDecoder !== 'undefined'};
+  var t = window.selkiesTransport;
+  if (!t) return out;
+  out.ws = (t.readyState === undefined) ? 1 : t.readyState;
+  if (out.ws !== 1) { out.stage = 'no-socket'; return out; }
+  var c = window.__csb || {};
+  out.frames = c.frames || 0; out.vw = c.vw || 0; out.vh = c.vh || 0;
+  out.stage = out.frames === 0 ? 'no-frames' : 'streaming';
   return out;
 })()`
 
 type probe struct {
-	Stage   string     `json:"stage"`
-	Ice     string     `json:"ice"`
-	Frames  int        `json:"frames"`
-	Dropped int        `json:"dropped"`
-	PktLoss int        `json:"pktloss"`
-	VW      int        `json:"vw"`
-	VH      int        `json:"vh"`
-	Cand    string     `json:"cand"`
-	PCs     int        `json:"pcs"`
-	Events  []iceEvent `json:"events"`
-}
-
-// iceEvent is one timestamped WebRTC milestone, ms relative to *its own* peer
-// connection's creation (Pc): negotiation calls (createOffer/Answer,
-// set{Local,Remote}Description), gathering/ice state changes, gathered
-// candidates. Per-PC timing avoids the misleading absolute performance.now().
-type iceEvent struct {
-	Pc int    `json:"pc"`
-	T  int    `json:"t"`
-	K  string `json:"k"`
-	V  string `json:"v"`
-}
-
-func (p probe) timeline() string {
-	if len(p.Events) == 0 {
-		return "(no events)"
-	}
-	parts := make([]string, len(p.Events))
-	for i, e := range p.Events {
-		parts[i] = fmt.Sprintf("#%d %s=%s@%dms", e.Pc, e.K, e.V, e.T)
-	}
-	return strings.Join(parts, " ")
+	Stage   string `json:"stage"`
+	WS      int    `json:"ws"`
+	Frames  int    `json:"frames"`
+	VW      int    `json:"vw"`
+	VH      int    `json:"vh"`
+	Decoder bool   `json:"decoder"`
 }
 
 type attemptResult struct {
 	idx         int
 	final       probe
-	tSignaling  time.Duration // first PC observed
-	tICE        time.Duration // ICE connected/completed
-	tFirstFrame time.Duration // framesDecoded > 0
+	tSocket     time.Duration // data socket open
+	tFirstFrame time.Duration // first desktop frame decoded
 	tOK         time.Duration // stage == ok (frames advancing)
 	console     []string
 }
@@ -209,10 +160,10 @@ func (r attemptResult) summary() string {
 		}
 		return strconv.FormatInt(d.Milliseconds(), 10) + "ms"
 	}
-	return fmt.Sprintf("stage=%s ice=%s frames=%d dropped=%d pktloss=%d cand=%s res=%dx%d | sig=%s ice=%s frame=%s ok=%s",
-		r.final.Stage, r.final.Ice, r.final.Frames, r.final.Dropped, r.final.PktLoss, r.final.Cand,
+	return fmt.Sprintf("stage=%s ws=%d frames=%d webcodecs=%t res=%dx%d | socket=%s frame=%s ok=%s",
+		r.final.Stage, r.final.WS, r.final.Frames, r.final.Decoder,
 		r.final.VW, r.final.VH,
-		ms(r.tSignaling), ms(r.tICE), ms(r.tFirstFrame), ms(r.tOK))
+		ms(r.tSocket), ms(r.tFirstFrame), ms(r.tOK))
 }
 
 // selkiesBrowser is a running csb container hosting selkies + headless Chromium.
@@ -254,7 +205,7 @@ func startSelkiesBrowser(t *testing.T, extraAddons ...string) *selkiesBrowser {
 		"--no-workspace",
 		"--publish", fmt.Sprintf("127.0.0.1:%d:%d", hostPort, cdpPort),
 		// Surface the server-side logs on the host by bind-mounting the
-		// selkies rundir out; selkies-start writes Xorg/coturn/selkies/pulse
+		// selkies rundir out; selkies-start writes Xorg/xfce4-session/selkies/pulse
 		// logs here. Must be :rw — csb's --mount defaults to read-only.
 		"--mount", logDir+":~/.selkies:rw",
 		"--", "bash", "-c", selkiesBrowserScript)
@@ -301,7 +252,10 @@ func (sb *selkiesBrowser) waitWSURL(t *testing.T, timeout time.Duration) string 
 }
 
 func fetchWSURL(base string, port int) string {
-	resp, err := http.Get(base)
+	// A bounded wait: the published port accepts connections before Chromium
+	// is up, and an unbounded Get then blocks the whole poll loop.
+	client := http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(base)
 	if err != nil {
 		return ""
 	}
@@ -349,35 +303,28 @@ func TestSelkiesE2EStream(t *testing.T) {
 }
 
 // TestSelkiesE2EStreamSystemd runs the same browser e2e with the systemd addon
-// also enabled — the heavier, more realistic mode (systemd as PID 1). It is a
-// distinct combination because systemd boots the coturn package's coturn.service
-// on 3478, which can shadow selkies-start's own TURN relay (a different
-// realm/credentials from the generated turnserver.conf), and only a real browser
-// negotiating over that relay proves whether media still connects.
+// also enabled — the heavier, more realistic mode (systemd as PID 1), where the
+// desktop session and PulseAudio start beside systemd's own user services.
 func TestSelkiesE2EStreamSystemd(t *testing.T) {
 	runSelkiesE2E(t, "systemd")
 }
 
 // TestSelkiesE2EHiDPI proves the HiDPI path with a real browser reporting
-// devicePixelRatio=2. Two things must happen, and only one of them used to:
-// Selkies renders the desktop at DEVICE pixels (1280x800 CSS becomes
-// 2560x1600) and then raises the desktop DPI to 96*2 to compensate. Without
-// the second, the picture is sharp but every label is half its physical size
-// — the whole symptom this covers.
+// devicePixelRatio=2. Two things must happen: Selkies renders the desktop at
+// DEVICE pixels (1280x800 CSS becomes 2560x1600) and then raises the desktop
+// DPI to 96*2 to compensate. Without the second, the picture is sharp but
+// every label is half its physical size.
 //
-// The DPI half is asserted from selkies' own log rather than by inspecting
-// X, so it exercises the real resize.py -> xfconf -> xfsettingsd path. That
-// path silently no-op'd under openbox, which had no xsettings daemon: it
-// logged "failed to find supported window manager to set DPI" and left the
-// desktop at 96. Both the success line and that failure text are checked,
-// because set_dpi can also report success while changing nothing.
+// Both halves are asserted from the real display state the container publishes
+// (Xft.dpi as X clients read it, and the current resolution), not from what
+// selkies logs, so a DPI change that reports success while changing nothing
+// still fails. The log is checked as well, for the failure text that points at
+// the cause.
 //
 // The metrics override is applied BEFORE navigating on purpose. The client
-// reports its pixel ratio in the HELLO meta the moment signalling opens
-// (signalling.js:183), and the server applies it right there
-// (__main__.py:649) — so first connect, not resize, is the path a real HiDPI
-// user takes and the one that has to work. Overriding after the stream is up
-// registers the session at scale 1 and proves nothing.
+// reports its pixel ratio when it connects, so first connect, not resize, is
+// the path a real HiDPI user takes and the one that has to work. Overriding
+// after the stream is up registers the session at scale 1 and proves nothing.
 func TestSelkiesE2EHiDPI(t *testing.T) {
 	sb := startSelkiesBrowser(t)
 	wsURL := sb.waitWSURL(t, 3*time.Minute)
@@ -389,7 +336,7 @@ func TestSelkiesE2EHiDPI(t *testing.T) {
 	runCtx, runCancel := context.WithTimeout(ctx, 4*time.Minute)
 	defer runCancel()
 
-	if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+	if err := chromedp.Run(runCtx, foreground(), chromedp.ActionFunc(func(ctx context.Context) error {
 		return emulation.SetDeviceMetricsOverride(1280, 800, 2, false).Do(ctx)
 	})); err != nil {
 		t.Fatalf("set device metrics override: %v", err)
@@ -406,57 +353,58 @@ func TestSelkiesE2EHiDPI(t *testing.T) {
 		t.Fatalf("devicePixelRatio override did not take: got %v, want 2", dpr)
 	}
 
-	// Device pixels, not CSS pixels: 1280x800 at 2x should ask for 2560x1600.
-	if err := waitJS(runCtx, 90*time.Second,
-		`(function(){return !!(window.webrtc&&webrtc.input)&&webrtc.input.getWindowResolution()[0]>=2000;})()`); err != nil {
-		var got string
-		_ = chromedp.Run(runCtx, chromedp.Evaluate(
-			`window.webrtc&&webrtc.input?JSON.stringify(webrtc.input.getWindowResolution()):"no client"`, &got))
-		t.Fatalf("resolution did not scale to device pixels (got %s): %v\n%s", got, err, sb.dumpLogs())
-	}
-
-	var logText string
+	// Device pixels, not CSS pixels: 1280x800 at 2x should ask for 2560x1600,
+	// and the desktop must reach at least 2000 wide, well past the CSS size.
+	var state string
 	deadline := time.Now().Add(120 * time.Second)
 	for time.Now().Before(deadline) {
-		b, _ := os.ReadFile(filepath.Join(sb.logDir, "selkies.log"))
-		logText = string(b)
-		if strings.Contains(logText, "Setting DPI to: 192") {
+		b, _ := os.ReadFile(filepath.Join(sb.logDir, "display.txt"))
+		state = strings.TrimSpace(string(b))
+		if displayWidth(state) >= 2000 && strings.HasPrefix(state, "dpi=192 ") {
 			break
 		}
 		time.Sleep(time.Second)
 	}
-	// The browser must have reported 2x in its session meta...
-	if !strings.Contains(logText, "'scale': 2") {
-		t.Fatalf("client never reported scale 2 in its session meta\n%s", tail(logText, 30))
+	if w := displayWidth(state); w < 2000 {
+		t.Fatalf("desktop did not scale to device pixels (display %q)\n%s", state, sb.dumpLogs())
 	}
-	// ...and the server must have actually applied 96*2.
-	if !strings.Contains(logText, "Setting DPI to: 192") {
-		t.Fatalf("selkies never set DPI to 192 for devicePixelRatio=2\n%s", tail(logText, 30))
+	if !strings.HasPrefix(state, "dpi=192 ") {
+		t.Fatalf("desktop DPI did not follow devicePixelRatio=2 (display %q, want dpi=192)\n%s", state, sb.dumpLogs())
 	}
-	for _, bad := range []string{"failed to set DPI", "failed to find supported window manager"} {
+
+	b, _ := os.ReadFile(filepath.Join(sb.logDir, "selkies.log"))
+	logText := string(b)
+	for _, bad := range []string{"Failed to set DPI", "No XFCE session", "No DPI setting method succeeded"} {
 		if strings.Contains(logText, bad) {
-			t.Fatalf("selkies logged %q — the DPI change did not apply\n%s", bad, tail(logText, 30))
+			t.Fatalf("selkies logged %q — the DPI change did not apply cleanly\n%s", bad, tail(logText, 30))
 		}
 	}
-	t.Logf("HiDPI ok: devicePixelRatio=2 -> device-pixel resolution + 192 DPI")
+	t.Logf("HiDPI ok: devicePixelRatio=2 -> display %q", state)
 }
 
-// waitJS polls a JavaScript boolean expression in the page until it is true.
-// Evaluation errors are treated as "not ready yet": the page reloads during
-// stream setup, so a transient failure is expected rather than fatal.
-func waitJS(ctx context.Context, timeout time.Duration, expr string) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		var ok bool
-		c, cancelEval := context.WithTimeout(ctx, 5*time.Second)
-		err := chromedp.Run(c, chromedp.Evaluate(expr, &ok))
-		cancelEval()
-		if err == nil && ok {
-			return nil
-		}
-		time.Sleep(500 * time.Millisecond)
+// foreground makes the tab count as visible and focused. The client stops the
+// video stream while its tab is hidden, and a tab opened over the DevTools port
+// starts out hidden. Without this the server is told to send nothing and the
+// run reads as a stall.
+func foreground() chromedp.Tasks {
+	return chromedp.Tasks{
+		emulation.SetFocusEmulationEnabled(true),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			return page.BringToFront().Do(ctx)
+		}),
 	}
-	return fmt.Errorf("timed out after %s waiting for: %s", timeout, expr)
+}
+
+// displayWidth parses the width out of the "dpi=N res=WxH" line the container
+// publishes, or 0 when it is absent or malformed.
+func displayWidth(state string) int {
+	_, res, ok := strings.Cut(state, "res=")
+	if !ok {
+		return 0
+	}
+	w, _, _ := strings.Cut(res, "x")
+	n, _ := strconv.Atoi(w)
+	return n
 }
 
 func runSelkiesE2E(t *testing.T, extraAddons ...string) {
@@ -474,7 +422,6 @@ func runSelkiesE2E(t *testing.T, extraAddons ...string) {
 		r := runAttempt(t, allocCtx, i, perAttempt)
 		results = append(results, r)
 		t.Logf("attempt %d: %s", i, r.summary())
-		t.Logf("attempt %d ice-timeline: %s", i, r.final.timeline())
 		if !r.ok() {
 			t.Logf("attempt %d console:\n%s", i, strings.Join(r.console, "\n"))
 		}
@@ -494,31 +441,17 @@ func runSelkiesE2E(t *testing.T, extraAddons ...string) {
 	if okCount != attempts {
 		t.Fatalf("selkies stream reached 'ok' in %d/%d attempts; see per-attempt stages above", okCount, attempts)
 	}
-
-	// Guard the selkies signalling-retry fix (see the addon install.sh patch):
-	// pairing must be prompt. Unpatched, the server's "no peer" retry loop stalls
-	// ~10s before it emits the WebRTC offer (setRemoteDescription), so the browser
-	// only reaches ICE-connected after that. The ICE/TURN handshake itself is
-	// ~150ms, so a healthy connect lands well under this bound; a regression
-	// (blocking 2s retry back) blows straight past it.
-	maxConnect := time.Duration(envInt("CSB_SELKIES_E2E_MAX_CONNECT_SECS", 4)) * time.Second
-	for _, r := range results {
-		if r.tICE < 0 || r.tICE > maxConnect {
-			t.Errorf("attempt %d: ICE connected in %s, want <= %s (selkies signalling-retry stall?)",
-				r.idx, r.tICE.Round(time.Millisecond), maxConnect)
-		}
-	}
 }
 
 // runAttempt opens a fresh tab, navigates to the Selkies client, and polls the
-// pipeline until it renders a non-black frame or the deadline passes. Each call
-// is an independent connect cycle (fresh tab → fresh WebRTC negotiation).
+// pipeline until frames advance or the deadline passes. Each call is an
+// independent connect cycle (fresh tab → fresh WebSocket session).
 func runAttempt(t *testing.T, allocCtx context.Context, idx int, deadline time.Duration) attemptResult {
 	t.Helper()
 	ctx, cancel := chromedp.NewContext(allocCtx)
 	defer cancel()
 
-	res := attemptResult{idx: idx, tSignaling: notReached, tICE: notReached, tFirstFrame: notReached, tOK: notReached}
+	res := attemptResult{idx: idx, tSocket: notReached, tFirstFrame: notReached, tOK: notReached}
 
 	var consoleMu sync.Mutex
 	chromedp.ListenTarget(ctx, func(ev any) {
@@ -546,6 +479,7 @@ func runAttempt(t *testing.T, allocCtx context.Context, idx int, deadline time.D
 			_, err := page.AddScriptToEvaluateOnNewDocument(hookScript).Do(ctx)
 			return err
 		}),
+		foreground(),
 		chromedp.Navigate("http://localhost:8080/"),
 	); err != nil {
 		t.Logf("attempt %d navigate error: %v", idx, err)
@@ -556,28 +490,22 @@ func runAttempt(t *testing.T, allocCtx context.Context, idx int, deadline time.D
 	poll := time.NewTicker(500 * time.Millisecond)
 	defer poll.Stop()
 	pollDeadline := time.Now().Add(deadline)
-	// Success is proven by frames *advancing*, not by pixels: headless Chromium
-	// with software rendering does not composite WebRTC <video> into canvas or
-	// screenshots (both read back black even though frames decode), so a pixel
-	// check is unreliable here. A live, advancing framesDecoded count also
-	// directly catches the flakiness modes that matter — stalls and freezes.
+	// Success is proven by frames *advancing*: a live, rising decoded-frame
+	// count directly catches the flakiness modes that matter — stalls and
+	// freezes.
 	minAdvance := envInt("CSB_SELKIES_E2E_MIN_FRAME_ADVANCE", 30)
 	baseFrames := -1
 	var baseTime time.Time
 	for {
 		var p probe
 		evalCtx, evalCancel := context.WithTimeout(ctx, 5*time.Second)
-		err := chromedp.Run(evalCtx, chromedp.Evaluate(pollScript, &p,
-			func(ep *runtime.EvaluateParams) *runtime.EvaluateParams { return ep.WithAwaitPromise(true) }))
+		err := chromedp.Run(evalCtx, chromedp.Evaluate(pollScript, &p))
 		evalCancel()
 		if err == nil {
 			res.final = p
 			el := time.Since(start)
-			if p.PCs > 0 && res.tSignaling < 0 {
-				res.tSignaling = el
-			}
-			if (p.Ice == "connected" || p.Ice == "completed") && res.tICE < 0 {
-				res.tICE = el
+			if p.WS == 1 && res.tSocket < 0 {
+				res.tSocket = el
 			}
 			if p.Frames > 0 && res.tFirstFrame < 0 {
 				res.tFirstFrame = el
@@ -586,7 +514,7 @@ func runAttempt(t *testing.T, allocCtx context.Context, idx int, deadline time.D
 				if baseFrames < 0 {
 					baseFrames, baseTime = p.Frames, time.Now()
 				}
-				if p.Cand == "succeeded" && p.Frames-baseFrames >= minAdvance && time.Since(baseTime) >= time.Second {
+				if p.Frames-baseFrames >= minAdvance && time.Since(baseTime) >= time.Second {
 					res.final.Stage = "ok"
 					res.tOK = el
 					return res

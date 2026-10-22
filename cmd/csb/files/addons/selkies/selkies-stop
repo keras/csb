@@ -3,37 +3,48 @@ set -euo pipefail
 
 _rundir="$HOME/.selkies"
 
+# Stop the daemon named by "<name>.pid" if its command line still contains
+# <match>. The pidfiles live in the persistent $HOME volume, so one left by an
+# earlier container can name a pid that now belongs to an unrelated process.
+# The identity check keeps selkies-stop from killing that process.
+_stop() {
+    local _name=$1 _match=$2 _pidfile _pid
+    _pidfile="$_rundir/${_name}.pid"
+    [ -f "$_pidfile" ] || return 0
+    _pid=$(cat "$_pidfile" 2>/dev/null || true)
+    if [ -n "$_pid" ] && [ -r "/proc/$_pid/cmdline" ] \
+        && tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null | grep -q -- "$_match"; then
+        kill "$_pid" 2>/dev/null || true
+        # Wait for it to actually exit before returning, so its sockets
+        # are released — otherwise a quick selkies-start afterwards
+        # races the dying process and fails to bind (e.g. selkies on
+        # 8080: "address already in use"). Escalate to SIGKILL if it
+        # doesn't go within ~5s.
+        for _ in $(seq 1 50); do kill -0 "$_pid" 2>/dev/null || break; sleep 0.1; done
+        kill -0 "$_pid" 2>/dev/null && kill -9 "$_pid" 2>/dev/null || true
+    fi
+    rm -f "$_pidfile"
+}
+
 # Tear the desktop down before Xorg: the XFCE components lose their
 # connection when the display goes away and would log a crash on the way
 # out. dbus-daemon goes last of the session, since the others talk to it.
-for _name in selkies coturn xfdesktop xfce4-panel xfwm4 xfsettingsd dbus Xorg; do
-    _pidfile="$_rundir/${_name}.pid"
-    if [ -f "$_pidfile" ]; then
-        _pid=$(cat "$_pidfile" 2>/dev/null || true)
-        # Only signal if the pid is non-empty and still alive, so we don't
-        # kill an unrelated process that recycled the pid.
-        if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
-            kill "$_pid" 2>/dev/null || true
-            # Wait for it to actually exit before returning, so its sockets
-            # are released — otherwise a quick selkies-start afterwards
-            # races the dying process and fails to bind (e.g. selkies on
-            # 8080: "address already in use"). Escalate to SIGKILL if it
-            # doesn't go within ~5s.
-            for _ in $(seq 1 50); do kill -0 "$_pid" 2>/dev/null || break; sleep 0.1; done
-            kill -0 "$_pid" 2>/dev/null && kill -9 "$_pid" 2>/dev/null || true
-        fi
-        rm -f "$_pidfile"
-    fi
+_stop selkies /opt/selkies
+_stop xfce4-session xfce4-session
+
+# xfce4-session does not always take its clients down with it, and a survivor
+# keeps its connection to a display and bus that are about to go away. Reap
+# them by exact name, limited to this user so a shared host is left alone.
+# (We intentionally do NOT pkill selkies by -f: its name appears in callers'
+# command lines — e.g. a test harness's `bash -c '…'` — and pkill -f would
+# match and kill them. The pidfile kill above already stops selkies' main
+# process, which owns port 8080.)
+for _name in xfdesktop xfce4-panel xfwm4 xfsettingsd xfconfd Thunar; do
+    pkill -u "$(id -u)" -x "$_name" 2>/dev/null || true
 done
 
-# coturn forks worker processes (SO_REUSEPORT) that each hold the
-# listening socket; killing only the main pid above leaves them bound to
-# 3478 and blocks a restart. Reap any stragglers by exact process name.
-# (We intentionally do NOT pkill selkies-gstreamer by -f: its name appears
-# in callers' command lines — e.g. a test harness's `bash -c '…'` — and
-# pkill -f would match and kill them. The pidfile kill above already stops
-# selkies' main process, which owns port 8080.)
-pkill -x turnserver 2>/dev/null || true
+_stop dbus dbus-daemon
+_stop Xorg Xorg
 
 # Xorg leaves its lock + socket behind on a signal-kill; remove them so a
 # subsequent selkies-start recreates display :1 instead of skipping it.
