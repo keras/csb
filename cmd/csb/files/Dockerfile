@@ -67,6 +67,21 @@ RUN printf '%s\n' \
     'exec tmux new-session -A -s main' \
     > /etc/profile.d/csb-tmux.sh
 
+# zsh login shells: Debian's zsh never reads /etc/profile or /etc/profile.d, so
+# with default_shell=zsh none of the snippets above (or the addons' — workdir
+# restore, tmux auto-start, PATH, mise, MOTD) would run in the systemd addon's
+# login(1) session. Source them from the global zprofile in sh emulation. Not
+# /etc/profile itself: it would clobber zsh's prompt with PS1='$ '. Only when
+# zsh is installed (packages addon) — otherwise there is nothing to configure.
+RUN if [ -d /etc/zsh ]; then printf '%s\n' \
+    '' \
+    '# csb: run the POSIX login snippets (bash gets them via /etc/profile).' \
+    'for _csb_f in /etc/profile.d/*.sh(N); do' \
+    '    [ -r "$_csb_f" ] && emulate sh -c ". \"\$_csb_f\""' \
+    'done' \
+    'unset _csb_f' \
+    >> /etc/zsh/zprofile; fi
+
 COPY csb/csb-host-run /usr/local/bin/csb-host-run
 
 # Entrypoint

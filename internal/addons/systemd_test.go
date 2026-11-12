@@ -46,7 +46,7 @@ import (
 // probeCmd is typed into the interactive shell. It records the session shape
 // and atomically publishes it to /mnt/csb-home for the host side to read.
 // Single line (typed via pty), double quotes only where expansion is wanted.
-const probeCmd = `{ echo "xdg=${XDG_RUNTIME_DIR:-}"; echo "tmux=${TMUX:-}"; echo "path=$PATH"; echo "pwd=$(pwd)"; echo "sessions=$(loginctl --no-legend list-sessions 2>/dev/null | wc -l)"; sid=$(loginctl --no-legend list-sessions 2>/dev/null | awk '{print $1; exit}'); echo "--- session-status ---"; loginctl session-status "$sid" 2>&1; } > /mnt/csb-home/.probe.tmp 2>&1; mv /mnt/csb-home/.probe.tmp /mnt/csb-home/probe.txt`
+const probeCmd = `{ echo "xdg=${XDG_RUNTIME_DIR:-}"; echo "zsh=${ZSH_VERSION:-}"; echo "tmux=${TMUX:-}"; echo "path=$PATH"; echo "pwd=$(pwd)"; echo "sessions=$(loginctl --no-legend list-sessions 2>/dev/null | wc -l)"; sid=$(loginctl --no-legend list-sessions 2>/dev/null | awk '{print $1; exit}'); echo "--- session-status ---"; loginctl session-status "$sid" 2>&1; } > /mnt/csb-home/.probe.tmp 2>&1; mv /mnt/csb-home/.probe.tmp /mnt/csb-home/probe.txt`
 
 // systemdSession drives an interactive `csb --addon systemd` under a pty.
 type systemdSession struct {
@@ -63,7 +63,14 @@ type systemdSession struct {
 
 func startSystemdSession(t *testing.T, extra ...string) *systemdSession {
 	t.Helper()
-	configDir := t.TempDir()
+	return startSystemdSessionIn(t, t.TempDir(), extra...)
+}
+
+// startSystemdSessionIn is startSystemdSession with a caller-provided config
+// dir, so files can be seeded into <config-dir>/home (symlinked into $HOME by
+// the entrypoint) before the container starts.
+func startSystemdSessionIn(t *testing.T, configDir string, extra ...string) *systemdSession {
+	t.Helper()
 	// Pre-create <config-dir>/home so csb bind-mounts it at /mnt/csb-home —
 	// the channel the probe uses to report back to the host.
 	if err := os.MkdirAll(filepath.Join(configDir, "home"), 0o755); err != nil {
@@ -304,6 +311,46 @@ func TestSystemdInteractiveTmux(t *testing.T) {
 	// Exiting the (only) tmux window ends the server, which ends the exec'd
 	// login shell and stops the container. tmux does not forward the window
 	// shell's exit status — the container exits 0; assert that shape.
+	s.sendLine("exit")
+	if code := s.waitExit(2 * time.Minute); code != 0 {
+		t.Errorf("exit code = %d, want 0\n--- terminal ---\n%s", code, s.terminal())
+	}
+}
+
+// TestSystemdInteractiveZshTmux: with default_shell=zsh the login(1) session
+// runs a zsh login shell, and Debian's zsh never reads /etc/profile.d. The
+// image's /etc/zsh/zprofile hook must still run csb's login snippets: restore
+// the workdir (csb-login-cwd.sh), auto-start tmux (csb-tmux.sh) and re-add the
+// ~/.local/bin PATH prefix (csb-path.sh) — the same shape as the bash path.
+func TestSystemdInteractiveZshTmux(t *testing.T) {
+	configDir := t.TempDir()
+	// An empty ~/.zshrc keeps zsh's new-user wizard from grabbing the
+	// terminal (and the typed probe) on first start.
+	if err := os.MkdirAll(filepath.Join(configDir, "home"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "home", ".zshrc"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := startSystemdSessionIn(t, configDir, "--addon", "packages zsh", "--shell", "zsh", "--tmux")
+	probe := s.probe()
+
+	if z := probeField(t, probe, "zsh"); z == "" {
+		t.Errorf("ZSH_VERSION unset — the session shell is not zsh\n%s", probe)
+	}
+	if tm := probeField(t, probe, "tmux"); tm == "" {
+		t.Errorf("TMUX unset — csb-tmux.sh did not run from the zsh login shell\n%s", probe)
+	}
+	if _, status, ok := strings.Cut(probe, "--- session-status ---"); !ok || !strings.Contains(status, "tmux") {
+		t.Errorf("tmux server not inside the logind session\n%s", probe)
+	}
+	if p := probeField(t, probe, "pwd"); p != "/workspace" {
+		t.Errorf("zsh tmux shell cwd = %q, want /workspace (csb-login-cwd.sh not applied?)\n%s", p, probe)
+	}
+	if p := probeField(t, probe, "path"); !strings.Contains(p, "/.local/bin") {
+		t.Errorf("PATH %q lost the ~/.local/bin prefix (csb-path.sh not applied?)\n%s", p, probe)
+	}
+
 	s.sendLine("exit")
 	if code := s.waitExit(2 * time.Minute); code != 0 {
 		t.Errorf("exit code = %d, want 0\n--- terminal ---\n%s", code, s.terminal())
