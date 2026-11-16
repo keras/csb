@@ -14,6 +14,9 @@ export NSS_WRAPPER_PASSWD=/tmp/passwd
 export NSS_WRAPPER_GROUP=/etc/group
 export LD_PRELOAD=$(find /usr/lib -name 'libnss_wrapper.so' | head -1)
 export HOME="$CSB_HOME"
+# Nothing else sets USER/LOGNAME: the runtime does not, and neither does gosu
+# (it only sets HOME). Normally login(1)/sshd/su export them from passwd.
+export USER=sandbox LOGNAME=sandbox
 export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
 
 # Timezone: TZ is already in the environment (set by ResolveEnv, defaulting to
@@ -66,9 +69,10 @@ _apply_entrypoint_d() {
 # the current process (the default, single-process path); with "noexec" it runs
 # the command as a child and returns its exit code so the caller can act on it.
 #
-# gosu rewrites HOME/USER/LOGNAME from the target uid's passwd entry. When
-# HOST_UID matches the uid we're already running as, skip gosu entirely —
-# there's no privilege to drop, and skipping avoids the env rewrite.
+# gosu rewrites HOME from the target uid's passwd entry (it leaves USER and
+# LOGNAME alone; those are exported above). When HOST_UID matches the uid we're
+# already running as, skip gosu entirely — there's no privilege to drop, and
+# skipping avoids the env rewrite.
 _run_user() {
     local mode=$1; shift
     local pre=()
