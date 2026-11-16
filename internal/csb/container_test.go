@@ -734,3 +734,121 @@ func TestShJoin_MultipleArgs(t *testing.T) {
 func TestShJoin_Empty(t *testing.T) {
 	assert.Equal(t, "", shJoin(nil))
 }
+
+// ── detachable sessions ──────────────────────────────────────────────────────
+
+func detachableCfg(t *testing.T) *Config {
+	t.Helper()
+	cfg := minimalCfg(t)
+	cfg.UseTTY = true
+	cfg.UseTmux = true
+	cfg.Detachable = true
+	ws := "/home/me/proj"
+	cfg.Workspace = &ws
+	cfg.Home = "/home/me"
+	return cfg
+}
+
+// The container's main process must be a detached tmux server plus a waiter, not
+// a tmux client: the client is what detaching or closing the terminal kills.
+func TestResolveContainerCmd_Detachable(t *testing.T) {
+	cfg := detachableCfg(t)
+	cfg.PassthroughArgs = []string{"vim", "file.txt"}
+
+	cmd := resolveContainerCmd(cfg)
+	require.Len(t, cmd, 5)
+	assert.Equal(t, []string{"sh", "-c"}, cmd[:2])
+	assert.Contains(t, cmd[2], "tmux new-session -d -s main")
+	assert.Contains(t, cmd[2], "tmux has-session -t main")
+	assert.Contains(t, cmd[4], "vim file.txt")
+	assert.Contains(t, cmd[4], "exec bash -l", "a non-shell command should fall through to a shell when it exits")
+}
+
+func TestResolveEnv_Detachable(t *testing.T) {
+	cfg := detachableCfg(t)
+	env := envMap(ResolveEnv(cfg, NewRuntime("docker"), "", ""))
+	assert.Equal(t, "1", env["CSB_DETACHABLE"])
+	assert.Equal(t, "1", env["CSB_TMUX"])
+
+	cfg.Detachable = false
+	env = envMap(ResolveEnv(cfg, NewRuntime("docker"), "", ""))
+	assert.NotContains(t, env, "CSB_DETACHABLE")
+}
+
+func TestBuildRunCommand_Detachable(t *testing.T) {
+	cfg := detachableCfg(t)
+
+	cmd, err := BuildRunCommand(cfg, nil, nil, "csb:abc123def456")
+	require.NoError(t, err)
+	joined := strings.Join(cmd, " ")
+
+	assert.Contains(t, joined, " -d ")
+	assert.True(t, hasPair(cmd, "--name", cfg.SessionName), "--name must carry the generated session name: %v", cmd)
+	assert.Regexp(t, `^csb-proj-[0-9a-f]{6}$`, cfg.SessionName)
+	assert.Contains(t, joined, "--label csb.detachable=true")
+	assert.Contains(t, joined, "--label csb.workspace=/home/me/proj")
+	// Base labels keep their fixed order ahead of the extras.
+	assert.Less(t, strings.Index(joined, "csb.managed=true"), strings.Index(joined, "csb.detachable=true"))
+}
+
+// A name already chosen (e.g. one the caller logged) is kept, not regenerated.
+func TestBuildRunCommand_DetachableKeepsSessionName(t *testing.T) {
+	cfg := detachableCfg(t)
+	cfg.SessionName = "csb-fixed-123456"
+
+	cmd, err := BuildRunCommand(cfg, nil, nil, "csb:abc123def456")
+	require.NoError(t, err)
+	assert.True(t, hasPair(cmd, "--name", "csb-fixed-123456"))
+}
+
+func TestBuildRunCommand_NotDetachableHasNoSessionBits(t *testing.T) {
+	cfg := minimalCfg(t)
+	cfg.UseTmux = true
+
+	cmd, err := BuildRunCommand(cfg, nil, nil, "csb:abc123def456")
+	require.NoError(t, err)
+	joined := strings.Join(cmd, " ")
+	assert.NotContains(t, joined, " -d ")
+	assert.NotContains(t, joined, "--name")
+	assert.NotContains(t, joined, "csb.detachable")
+}
+
+func TestNewSessionName(t *testing.T) {
+	for _, tc := range []struct {
+		workspace string
+		want      string
+	}{
+		{"/home/me/proj", `^csb-proj-[0-9a-f]{6}$`},
+		{"/home/me/my project!", `^csb-my-project-[0-9a-f]{6}$`},
+		{"/", `^csb-session-[0-9a-f]{6}$`},
+	} {
+		ws := tc.workspace
+		cfg := &Config{Workspace: &ws}
+		assert.Regexp(t, tc.want, newSessionName(cfg), tc.workspace)
+	}
+	assert.Regexp(t, `^csb-session-[0-9a-f]{6}$`, newSessionName(&Config{}))
+}
+
+func hasPair(args []string, flag, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+// ── #2: PID 1 must honour SIGTERM ────────────────────────────────────────────
+
+// The wrapper shell is the container's PID 1, which the kernel gives no default
+// signal actions. Without a trap, `docker stop` hangs for the grace period and is
+// then SIGKILLed; sleeping via `wait` lets a trapped signal act immediately.
+func TestResolveContainerCmd_DetachableTrapsSignals(t *testing.T) {
+	cfg := detachableCfg(t)
+	script := resolveContainerCmd(cfg)[2]
+
+	assert.Contains(t, script, "trap 'tmux kill-server")
+	assert.Contains(t, script, "TERM INT HUP")
+	assert.Contains(t, script, "sleep 1 & wait $!")
+	assert.Less(t, strings.Index(script, "trap"), strings.Index(script, "new-session"), "trap must be installed before the session starts")
+}

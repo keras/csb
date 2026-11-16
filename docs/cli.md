@@ -4,6 +4,7 @@
 
 ```
 csb [flags] [-- cmd...]
+csb attach [NAME|ID]
 csb clean
 csb config show [config|context]
 csb config edit [user|workdir]
@@ -15,7 +16,7 @@ csb config update
 
 `csb` looks at the first non-flag argument to decide what to do:
 
-- `clean`, `config` (or `config-edit`), `run` select that subcommand.
+- `attach`, `clean`, `config` (or `config-edit`), `run` select that subcommand.
 - Anything else is treated as the start of a passthrough command, so
   `csb python script.py` runs `python script.py` in the container without
   needing `--`:
@@ -67,6 +68,44 @@ Everything else — `--tmux`, `--shell`, `--addon`, `--mount`, `--publish`,
 `--host-network`, `--host-exec*`, and their env vars and YAML keys — is documented in
 [Configuration](configuration.md), since the same flags can be set via
 `config.yaml` or environment variables and follow the same precedence rules.
+
+## Detachable sessions
+
+By default the tmux client (`--tmux`) is the container's main process, so
+detaching (`prefix d`) or closing the terminal stops and removes the
+container. With `--detachable` (or `detachable: true`) the container runs in
+the background and only your *connection* to it comes and goes:
+
+```sh
+csb --detachable        # start (or reattach to) the session for this directory
+# ... prefix d, or just close the terminal ...
+csb                     # with detachable: true in config; otherwise: csb --detachable
+csb attach              # reattach to the session for this directory
+csb attach NAME         # reattach to a specific one
+```
+
+- `--detachable` implies `--tmux` and needs a terminal (`--no-tty` is an error).
+- The container keeps running until you end the tmux session — `exit` in the
+  last window — or remove it with `csb clean` or `docker rm -f`. Ending the
+  session stops and removes the container as usual.
+- Sessions are named `csb-<workspace>-<hex>`. `csb attach` with no argument
+  picks the one started from the current workspace and config dir; if there is
+  none or several, it lists the running sessions and exits 2. It exits 1 when no
+  detachable session is running at all.
+- A bare `csb --detachable` (no command, no `--rebuild`) reattaches to that
+  session instead of starting a second container. Giving a command
+  (`csb --detachable -- vim`) or `--rebuild` always starts a fresh one.
+- `--host-exec` is not yet supported across detach: the broker belongs to the
+  `csb` process and stops when it exits, so host commands stop working once
+  you detach, and reattaching does not restart it.
+- With the systemd addon, run `csb config update` once so the shipped
+  Dockerfile picks up the detachable-aware `csb-tmux.sh`.
+
+## `csb attach`
+
+`csb attach [NAME|ID]` reattaches to a running detachable session — see above.
+`NAME` is the container name; an ID prefix also works. Takes the boot flags
+(`--config-dir`, `--workspace`) and `--runtime`; `-h` prints a short summary.
 
 ## `csb clean`
 

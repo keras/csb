@@ -9,10 +9,8 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
@@ -344,6 +342,27 @@ func RunRun(cfg *Config, rt *Runtime, assets Assets) error {
 		}
 	}
 
+	// A bare detachable run reattaches to the session already running for this
+	// workspace instead of starting a second container. An explicit command or
+	// --rebuild means the user wants a fresh one.
+	if cfg.Detachable && len(cfg.PassthroughArgs) == 0 && !cfg.Rebuild {
+		running, err := rt.ListSessions()
+		if err != nil {
+			// Not "no sessions": starting a second container for a workspace that may
+			// already have one running is worse than stopping here.
+			return fmt.Errorf("looking for a running session: %w", err)
+		}
+		existing := sessionsForWorkspace(running, cfg)
+		switch len(existing) {
+		case 0:
+		case 1:
+			fmt.Fprintf(os.Stderr, "csb: attaching to running session %s\n", existing[0].Name)
+			return attachSession(rt, existing[0].ID, existing[0].Name)
+		default:
+			return &ExitError{Code: 2, Err: fmt.Errorf("several sessions running for this workspace; pick one with: csb attach NAME\n%s", sessionTable(existing, cfg.Home))}
+		}
+	}
+
 	// Validate addons exist
 	for _, spec := range cfg.Addons {
 		name, _ := parseAddonSpec(spec)
@@ -422,41 +441,40 @@ func RunRun(cfg *Config, rt *Runtime, assets Assets) error {
 
 	logInfo("launching", "command", shJoin(cmd))
 
-	runCmd := exec.Command(cmd[0], cmd[1:]...)
-	runCmd.Stdin, runCmd.Stdout, runCmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	// No Setpgid: the container must stay in csb's foreground group so the tty
-	// delivers Ctrl-C straight to podman.
-	//
-	// Notify before Start — a signal in between would hit the default
-	// disposition and kill csb, orphaning the container and broker.
-	sigC := make(chan os.Signal, 1)
-	signal.Notify(sigC, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-	defer close(sigC) // LIFO: Stop first, then close ends the goroutine
-	defer signal.Stop(sigC)
-	if err := runCmd.Start(); err != nil {
-		return fmt.Errorf("starting %s: %w", cmd[0], err)
+	var runErr error
+	if cfg.Detachable {
+		// Registered before the container exists, and kept through the attach.
+		sigC, stop := notifySignals()
+		defer stop()
+		runErr = runDetachable(rt, cmd, cfg.SessionName, sigC)
+	} else {
+		runErr = runForeground(cmd)
 	}
-
-	go func() {
-		for s := range sigC {
-			_ = runCmd.Process.Signal(s)
-		}
-	}()
-
-	runErr := runCmd.Wait()
 
 	if brokerProc != nil {
 		_ = brokerProc.Process.Signal(os.Interrupt)
 		_ = brokerProc.Wait()
 	}
+	return runErr
+}
 
-	if runErr != nil {
-		var exitErr *exec.ExitError
-		if errors.As(runErr, &exitErr) {
-			// The container chose its status; not a csb error.
-			return &ExitError{Code: exitErr.ExitCode()}
-		}
-		return fmt.Errorf("waiting for %s: %w", cmd[0], runErr)
+// runDetachable starts the container in the background, waits for its tmux
+// session, and attaches. Detaching only ends the attach; the container keeps
+// running until the session itself ends.
+func runDetachable(rt *Runtime, cmd []string, name string, sigC <-chan os.Signal) error {
+	id, err := startDetached(cmd)
+	if err != nil {
+		return err
 	}
-	return nil
+	logInfo("session started", "name", name, "id", id)
+	if err := waitSessionReady(rt, id, sigC); err != nil {
+		// Never leave a session nobody attached to running in the background.
+		rt.RemoveContainers([]string{id})
+		var interrupted *interruptedError
+		if errors.As(err, &interrupted) {
+			return &ExitError{Code: interrupted.exitCode(), Err: fmt.Errorf("interrupted while starting session %s; removed it", name)}
+		}
+		return fmt.Errorf("starting session %s: %w", name, err)
+	}
+	return attachSession(rt, id, name)
 }

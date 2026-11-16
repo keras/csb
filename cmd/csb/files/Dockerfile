@@ -58,12 +58,19 @@ RUN printf '%s\n' \
 # requested (CSB_TMUX=1) start it here so the tmux server runs inside the logind
 # session. Guarded: interactive login shell on a tty, and never recurse when
 # already inside tmux (so the default non-systemd path's tmux windows skip it).
+# Detachable sessions (CSB_DETACHABLE=1) start the server detached and keep this
+# login shell — and so the container — alive until the tmux session ends; clients
+# attach with `exec ... tmux attach`, so detaching never ends the login session.
 RUN printf '%s\n' \
     'case $- in *i*) ;; *) return 0 ;; esac' \
     '[ -t 1 ] || return 0' \
     '[ "${CSB_TMUX:-0}" = 1 ] || return 0' \
     '[ -n "$TMUX" ] && return 0' \
     'command -v tmux >/dev/null 2>&1 || return 0' \
+    'if [ "${CSB_DETACHABLE:-0}" = 1 ]; then' \
+    '    tmux new-session -d -s main && while tmux has-session -t main 2>/dev/null; do sleep 1; done' \
+    '    exit' \
+    'fi' \
     'exec tmux new-session -A -s main' \
     > /etc/profile.d/csb-tmux.sh
 

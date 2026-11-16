@@ -43,7 +43,8 @@ var portRE = regexp.MustCompile(
 //	example:"text"   Example value for the generated config template. Use literal \n as line separator.
 type Options struct {
 	UseTmux      bool     `flag:"tmux"            yaml:"tmux"             example:"true"                                 help:"run inside tmux"`
-	UseTTY       bool     `flag:"tty"             yaml:"tty"              default:"@autoTTY"    example:"true"         help:"allocate a TTY (default: auto-detect from stdin)"`
+	Detachable   bool     `flag:"detachable"     yaml:"detachable"       example:"true"                                 help:"keep the session running after tmux detach or terminal close (implies --tmux; reattach with 'csb attach')"`
+	UseTTY       bool     `flag:"tty"            yaml:"tty"              default:"@autoTTY"    example:"true"         help:"allocate a TTY (default: auto-detect from stdin)"`
 	DefaultShell string   `flag:"shell"           yaml:"default_shell"    default:"bash"        example:"zsh"          help:"shell for new tmux windows, $SHELL, and default startup command"`
 	DefaultCmd   []string `yaml:"default_cmd"                             example:"[vim]"       help:"startup command (default: <default_shell> -l; overridden by positional args)"`
 	Addons       []string `flag:"addon"           yaml:"addons"           default:"mise sudo"   dedup:"first"         example:"\n- mise\n- sudo\n- gui\n- packages git nano" help:"addon to install (NAME [ARGS...])"     metavar:"SPEC"`

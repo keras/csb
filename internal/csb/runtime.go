@@ -3,6 +3,7 @@ package csb
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -419,16 +420,18 @@ func (r *Runtime) ListCSBContainersInfo() []ContainerInfo {
 	return infos
 }
 
-// containerConfigDirs returns a short-ID → csb.config-dir map for the given
-// container IDs. ps only reports the 12-char short ID, so inspect's full Id is
-// truncated to match.
-func (r *Runtime) containerConfigDirs(ids []string) map[string]string {
+// containerLabels returns a short-ID → label-set map for the given container
+// IDs. ps only reports the 12-char short ID, so inspect's full Id is truncated
+// to match.
+//
+// A container that vanished between the caller's listing and this inspect makes
+// the runtime exit non-zero while still printing the rest, so whatever parses is
+// returned and missing IDs are simply absent from the map. An error is reported
+// only when nothing usable came back.
+func (r *Runtime) containerLabels(ids []string) (map[string]map[string]string, error) {
 	args := append([]string{"container", "inspect"}, ids...)
 	cmd := exec.Command(r.CLI, args...)
 	out, err := cmd.Output()
-	if err != nil {
-		return nil
-	}
 	type ctrJSON struct {
 		Id     string `json:"Id"`
 		Config struct {
@@ -436,18 +439,124 @@ func (r *Runtime) containerConfigDirs(ids []string) map[string]string {
 		} `json:"Config"`
 	}
 	var ctrs []ctrJSON
-	if err := json.Unmarshal(out, &ctrs); err != nil {
-		return nil
+	if jsonErr := json.Unmarshal(out, &ctrs); jsonErr != nil {
+		if err != nil {
+			return nil, runtimeError(r.CLI, "container inspect", err)
+		}
+		return nil, fmt.Errorf("parsing %s container inspect output: %w", r.CLI, jsonErr)
 	}
-	result := make(map[string]string, len(ctrs))
+	result := make(map[string]map[string]string, len(ctrs))
 	for _, c := range ctrs {
 		id := c.Id
 		if len(id) > 12 {
 			id = id[:12]
 		}
-		result[id] = c.Config.Labels["csb.config-dir"]
+		result[id] = c.Config.Labels
+	}
+	return result, nil
+}
+
+// runtimeError describes a failed runtime CLI call, including its stderr when the
+// runtime produced any (exec's Output captures it on an *exec.ExitError).
+func runtimeError(cli, what string, err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if msg := strings.TrimSpace(string(exitErr.Stderr)); msg != "" {
+			return fmt.Errorf("%s %s: %w: %s", cli, what, err, msg)
+		}
+	}
+	return fmt.Errorf("%s %s: %w", cli, what, err)
+}
+
+// containerConfigDirs returns a short-ID → csb.config-dir map for the given
+// container IDs.
+func (r *Runtime) containerConfigDirs(ids []string) map[string]string {
+	labels, err := r.containerLabels(ids)
+	if err != nil {
+		return nil // best effort: the config dir is only a display column
+	}
+	result := make(map[string]string, len(labels))
+	for id, l := range labels {
+		result[id] = l[LabelConfigDir]
 	}
 	return result
+}
+
+// SessionInfo describes a running detachable csb session.
+type SessionInfo struct {
+	ID        string
+	Name      string
+	Status    string // human status, e.g. "Up 3 minutes"
+	Workspace string // host workspace path ("" when started with --no-workspace)
+	ConfigDir string
+}
+
+// ListSessions returns the running detachable sessions (containers started with
+// --detachable), across every workspace and config dir. Failure to ask the
+// runtime is an error, not an empty list: callers use "no sessions" to decide to
+// start a new container, which must not happen just because a lookup failed.
+func (r *Runtime) ListSessions() ([]SessionInfo, error) {
+	cmd := exec.Command(r.CLI, "ps",
+		"--filter", "label=csb.managed=true",
+		"--filter", "label="+LabelDetachable+"=true",
+		"--format", "{{.ID}}\t{{.Names}}\t{{.Status}}",
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, runtimeError(r.CLI, "ps", err)
+	}
+	var infos []SessionInfo
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 3)
+		info := SessionInfo{ID: parts[0]}
+		if len(parts) > 1 {
+			info.Name = parts[1]
+		}
+		if len(parts) > 2 {
+			info.Status = parts[2]
+		}
+		infos = append(infos, info)
+	}
+	if len(infos) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, len(infos))
+	for i, info := range infos {
+		ids[i] = info.ID
+	}
+	labels, err := r.containerLabels(ids)
+	if err != nil {
+		return nil, err
+	}
+	// Keep only sessions that were still there to inspect; one that ended between
+	// ps and inspect is gone, not a session with unknown labels.
+	live := infos[:0]
+	for _, info := range infos {
+		l, ok := labels[info.ID]
+		if !ok {
+			continue
+		}
+		info.Workspace = l[LabelWorkspace]
+		info.ConfigDir = l[LabelConfigDir]
+		live = append(live, info)
+	}
+	return live, nil
+}
+
+// ContainerRunning reports whether the container (by ID or name) is running.
+func (r *Runtime) ContainerRunning(id string) bool {
+	out, err := exec.Command(r.CLI, "container", "inspect", "-f", "{{.State.Running}}", id).Output()
+	return err == nil && strings.TrimSpace(string(out)) == "true"
+}
+
+// TmuxReady reports whether the container's tmux session exists yet, probing as
+// the same uid:gid the session was started as (so the tmux socket path matches).
+func (r *Runtime) TmuxReady(id, uid, gid string) bool {
+	cmd := exec.Command(r.CLI, "exec", "-u", uid+":"+gid, id, "tmux", "has-session", "-t", tmuxSessionName)
+	return cmd.Run() == nil
 }
 
 // RemoveContainers force-removes containers by ID (running or stopped).

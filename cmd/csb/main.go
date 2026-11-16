@@ -80,6 +80,10 @@ func main() {
 		if err := csb.RunClean(cfg, rt); err != nil {
 			exit(err)
 		}
+	case "attach":
+		if err := csb.RunAttach(cfg, rt); err != nil {
+			exit(err)
+		}
 	case "config":
 		var err error
 		switch cfg.ConfigAction {

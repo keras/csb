@@ -1,6 +1,7 @@
 package csb
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -91,6 +92,8 @@ func detectSubcommand(argv []string) (string, []string) {
 			return "config", append(argv[:i:i], argv[i+1:]...)
 		case "run":
 			return "run", append(argv[:i:i], argv[i+1:]...)
+		case "attach":
+			return "attach", append(argv[:i:i], argv[i+1:]...)
 		default:
 			return "run", argv
 		}
@@ -147,6 +150,9 @@ loop:
 			case "run":
 				fmt.Print(formatHelp())
 				return pf, &ExitError{Code: 0}
+			case "attach":
+				fmt.Print(formatAttachHelp())
+				return pf, &ExitError{Code: 0}
 			}
 			continue // clean has no dedicated help screen
 		}
@@ -186,7 +192,7 @@ loop:
 		case "run":
 			passthroughStart = i
 			break loop
-		case "config":
+		case "config", "attach":
 			pf.positional = append(pf.positional, arg)
 		}
 		// clean ignores positionals
@@ -251,6 +257,8 @@ func ParseArgs(argv []string) (*Config, error) {
 		return buildCleanConfig(pf, configDir, workspace, yamlLayers, cwd, home)
 	case "config":
 		return buildConfigConfig(pf, configDir, workspace, yamlLayers, cwd, home)
+	case "attach":
+		return buildAttachConfig(pf, configDir, workspace, yamlLayers, cwd, home)
 	default:
 		return buildRunConfig(pf, configDir, workspace, yamlLayers, cwd, home)
 	}
@@ -361,6 +369,22 @@ func buildRunConfig(pf parsedFlags, configDir string, workspace *string, yamlLay
 		return nil, err
 	}
 
+	// A detachable session is a tmux session that outlives the client, so it
+	// implies tmux and needs a terminal to attach to. Asking for it on the command
+	// line without a terminal is an error; a `detachable: true` that merely came
+	// from config must not break non-interactive runs (scripts, CI), so there it
+	// quietly falls back to an ordinary run.
+	if resolved.Detachable {
+		switch {
+		case resolved.UseTTY:
+			resolved.UseTmux = true
+		case cliSetBool(pf.optVals, "Detachable"):
+			return nil, errors.New("--detachable needs an interactive terminal (a TTY)")
+		default:
+			resolved.Detachable = false
+		}
+	}
+
 	return &Config{
 		CWD:             cwd,
 		Home:            home,
@@ -371,6 +395,41 @@ func buildRunConfig(pf parsedFlags, configDir string, workspace *string, yamlLay
 		Verbose:         pf.verbose,
 		PassthroughArgs: pf.passthrough,
 		Options:         resolved,
+	}, nil
+}
+
+// cliSetBool reports whether the named Options bool field was set to true on the
+// command line (as opposed to coming from env, YAML or its default).
+func cliSetBool(optVals map[int]any, field string) bool {
+	f, ok := reflect.TypeOf(Options{}).FieldByName(field)
+	if !ok {
+		return false
+	}
+	v, _ := optVals[f.Index[0]].(bool)
+	return v
+}
+
+func buildAttachConfig(pf parsedFlags, configDir string, workspace *string, yamlLayers []map[string]interface{}, cwd, home string) (*Config, error) {
+	if len(pf.positional) > 1 {
+		return nil, fmt.Errorf("attach takes at most one session name, got %d arguments", len(pf.positional))
+	}
+	resolved, err := resolveOptions(pf.optVals, yamlLayers...)
+	if err != nil {
+		return nil, err
+	}
+	target := ""
+	if len(pf.positional) == 1 {
+		target = pf.positional[0]
+	}
+	return &Config{
+		CWD:          cwd,
+		Home:         home,
+		ConfigDir:    configDir,
+		Workspace:    workspace,
+		Subcommand:   "attach",
+		AttachTarget: target,
+		Verbose:      pf.verbose,
+		Options:      resolved,
 	}, nil
 }
 
@@ -462,11 +521,26 @@ Options:
 	return header + strings.Join(rows, "\n") + "\n"
 }
 
+func formatAttachHelp() string {
+	header := `Usage: csb attach [flags] [NAME|ID]
+
+Reattach to a running detachable session (started with --detachable). With no
+NAME, attaches to the session for the current workspace; if there is none or
+more than one, the running sessions are listed.
+
+Flags:
+`
+	rows := optionRows(reflect.TypeOf(bootParams{}), false)
+	rows = append(rows, helpRow{"-v, --verbose", "verbose logging"})
+	return header + strings.Join(renderRows(rows), "\n") + "\n"
+}
+
 func formatHelp() string {
 	header := `Usage: csb [flags] [subcommand] [-- args...]
 
 Subcommands:
   run               Run a command in an isolated container (default)
+  attach [NAME]     Reattach to a running detachable session (see --detachable)
   clean             Interactively select csb containers, images, and volumes to remove
   config show       Print the fully resolved configuration as YAML
   config show context  List the docker build context that would be sent

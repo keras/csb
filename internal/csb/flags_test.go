@@ -296,3 +296,102 @@ func TestParseArgs_LocatorFlagAfterBoundaryNotConsumed(t *testing.T) {
 	assert.NotEqual(t, "/elsewhere", *cfg.Workspace)
 	assert.Equal(t, []string{"tool", "--workspace", "/elsewhere"}, cfg.PassthroughArgs)
 }
+
+// ── detachable / attach ──────────────────────────────────────────────────────
+
+func TestDetectSubcommand_Attach(t *testing.T) {
+	sub, rest := detectSubcommand([]string{"--runtime", "docker", "attach", "my-session"})
+	assert.Equal(t, "attach", sub)
+	assert.Equal(t, []string{"--runtime", "docker", "my-session"}, rest)
+}
+
+func TestParseArgs_DetachableImpliesTmux(t *testing.T) {
+	t.Setenv("CSB_CONFIG_DIR", t.TempDir())
+
+	cfg, err := ParseArgs([]string{"--no-workspace", "--tty", "--detachable"})
+	require.NoError(t, err)
+	assert.True(t, cfg.Detachable)
+	assert.True(t, cfg.UseTmux, "--detachable must imply tmux")
+}
+
+func TestParseArgs_DetachableFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CSB_CONFIG_DIR", dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("detachable: true\n"), 0644))
+
+	cfg, err := ParseArgs([]string{"--no-workspace", "--tty"})
+	require.NoError(t, err)
+	assert.True(t, cfg.Detachable)
+	assert.True(t, cfg.UseTmux)
+}
+
+func TestParseArgs_DetachableNeedsTTY(t *testing.T) {
+	t.Setenv("CSB_CONFIG_DIR", t.TempDir())
+
+	_, err := ParseArgs([]string{"--no-workspace", "--no-tty", "--detachable"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "interactive terminal")
+}
+
+// Plain --tmux is unchanged: not detachable.
+func TestParseArgs_TmuxAloneNotDetachable(t *testing.T) {
+	t.Setenv("CSB_CONFIG_DIR", t.TempDir())
+
+	cfg, err := ParseArgs([]string{"--no-workspace", "--tmux"})
+	require.NoError(t, err)
+	assert.True(t, cfg.UseTmux)
+	assert.False(t, cfg.Detachable)
+}
+
+func TestParseArgs_Attach(t *testing.T) {
+	t.Setenv("CSB_CONFIG_DIR", t.TempDir())
+
+	cfg, err := ParseArgs([]string{"--no-workspace", "attach", "csb-proj-aabbcc"})
+	require.NoError(t, err)
+	assert.Equal(t, "attach", cfg.Subcommand)
+	assert.Equal(t, "csb-proj-aabbcc", cfg.AttachTarget)
+
+	cfg, err = ParseArgs([]string{"--no-workspace", "attach"})
+	require.NoError(t, err)
+	assert.Equal(t, "", cfg.AttachTarget)
+
+	// attach does not require a TTY at parse time, nor does detachable validation apply.
+	_, err = ParseArgs([]string{"--no-workspace", "--no-tty", "--detachable", "attach"})
+	require.NoError(t, err)
+}
+
+func TestParseArgs_AttachTooManyTargets(t *testing.T) {
+	t.Setenv("CSB_CONFIG_DIR", t.TempDir())
+
+	_, err := ParseArgs([]string{"--no-workspace", "attach", "a", "b"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "at most one")
+}
+
+// ── #3: detachable from config must not break non-interactive runs ───────────
+
+// `detachable: true` is a standing preference; a script or CI job with no TTY
+// should just get an ordinary run, not an error. Only an explicit CLI request
+// without a terminal is a mistake worth reporting.
+func TestParseArgs_DetachableFromConfigFallsBackWithoutTTY(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CSB_CONFIG_DIR", dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("detachable: true\n"), 0644))
+
+	cfg, err := ParseArgs([]string{"--no-workspace", "--no-tty"})
+	require.NoError(t, err)
+	assert.False(t, cfg.Detachable, "no terminal: fall back to a normal run")
+	assert.False(t, cfg.UseTmux, "and don't drag tmux in either")
+
+	// With a terminal the config preference applies as before.
+	cfg, err = ParseArgs([]string{"--no-workspace", "--tty"})
+	require.NoError(t, err)
+	assert.True(t, cfg.Detachable)
+	assert.True(t, cfg.UseTmux)
+
+	// Asking for it explicitly without a terminal is still an error, even when
+	// config also enables it.
+	_, err = ParseArgs([]string{"--no-workspace", "--no-tty", "--detachable"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "interactive terminal")
+}

@@ -31,6 +31,12 @@ type mockBehavior struct {
 //	"volume ls"      / "volume rm"        docker volume ls/rm ...
 //	"network inspect"                     docker network inspect ...
 //	"run"                                 docker run ...
+//	"ps"                                  docker ps ...
+//	"container inspect"                   docker container inspect <ids> (label JSON)
+//	"container inspect -f"                docker container inspect -f <fmt> <id> (running state)
+//	"exec ready"                          docker exec ... tmux has-session ...
+//	"exec attach"                         docker exec -it ... tmux attach-session ...
+//	"rm"                                  docker rm ...
 //
 // Unspecified subcommands default to exit 0 with no output.
 type mockDockerConfig map[string]mockBehavior
@@ -85,6 +91,19 @@ case "$1" in
   images) {{caseBody .Cfg "images"}} ;;
   rmi)    {{caseBody .Cfg "rmi"}} ;;
   run)    {{caseBody .Cfg "run"}} ;;
+  ps)     {{caseBody .Cfg "ps"}} ;;
+  rm)     {{caseBody .Cfg "rm"}} ;;
+  container)
+    case "$2" in
+      inspect)
+        if [ "$3" = "-f" ]; then {{caseBody .Cfg "container inspect -f"}}; else {{caseBody .Cfg "container inspect"}}; fi ;;
+      *) exit 0 ;;
+    esac ;;
+  exec)
+    case " $* " in
+      *" attach-session "*) {{caseBody .Cfg "exec attach"}} ;;
+      *) {{caseBody .Cfg "exec ready"}} ;;
+    esac ;;
   *) exit 0 ;;
 esac
 `))
@@ -335,4 +354,118 @@ func TestRunImageNameConsistency(t *testing.T) {
 	}
 	assert.NotEmpty(t, runImage, "could not find csb: image name in docker run call: %v", run)
 	assert.Equal(t, buildImage, runImage, "image name in build and run should match")
+}
+
+// -- Detachable sessions ------------------------------------------------------
+
+// TestDetachableStartsThenAttaches verifies the detachable call sequence: the
+// container is started in the background (-d, named, labelled), csb waits for
+// the tmux session with `exec ... has-session`, then attaches with
+// `exec -it ... attach-session`. Nothing stops the container afterwards.
+func TestDetachableStartsThenAttaches(t *testing.T) {
+	logFile, env := injectDocker(t, mockDockerConfig{
+		"image inspect":        {Exit: 0},
+		"volume inspect":       {Exit: 0},
+		"network inspect":      {Exit: 1},
+		"ps":                   {Exit: 0}, // no running sessions
+		"run":                  {Exit: 0, Stdout: "abc123def456\n"},
+		"exec ready":           {Exit: 0},
+		"exec attach":          {Exit: 0},
+		"container inspect -f": {Exit: 0, Stdout: "true\n"},
+	})
+
+	ws := t.TempDir()
+	out, ok := runCSB(t, env, configDirFlag(t.TempDir()), "--workspace="+ws, "--runtime=docker", "--detachable", "--tty")
+	assert.True(t, ok, "csb --detachable exited non-zero; output:\n%s", out)
+	assert.Contains(t, out, "still running; reattach with: csb attach csb-")
+
+	calls := readDockerCalls(t, logFile)
+	run := findCall(calls, "run")
+	if assert.NotNil(t, run, "expected docker run call") {
+		assert.Contains(t, run, "-d", "detachable run must be backgrounded")
+		assert.Contains(t, run, "--name")
+		assert.Contains(t, run, "csb.detachable=true")
+		assert.Contains(t, run, "csb.workspace="+ws)
+	}
+
+	ready := findCall(calls, "exec", "-u")
+	assert.NotNil(t, ready, "expected docker exec has-session readiness probe")
+
+	attach := findCall(calls, "exec", "-it")
+	if assert.NotNil(t, attach, "expected docker exec -it attach call") {
+		assert.Equal(t, []string{"tmux", "attach-session", "-t", "main"}, attach[len(attach)-4:])
+		assert.Contains(t, attach, "abc123def456")
+	}
+	assert.Nil(t, findCall(calls, "rm"), "detaching must not remove the container")
+}
+
+// TestDetachableAutoAttach verifies that a bare --detachable run reattaches to
+// the running session for the same workspace and config dir, without building
+// or starting anything.
+func TestDetachableAutoAttach(t *testing.T) {
+	ws := t.TempDir()
+	cfgDir := t.TempDir()
+	labels := fmt.Sprintf(`[{"Id":"abc123def456aaaaaaaaaaaa","Config":{"Labels":{"csb.workspace":%q,"csb.config-dir":%q}}}]`, ws, cfgDir)
+	logFile, env := injectDocker(t, mockDockerConfig{
+		"ps":                   {Exit: 0, Stdout: "abc123def456\tcsb-proj-aabbcc\tUp 2 minutes\n"},
+		"container inspect":    {Exit: 0, Stdout: labels},
+		"container inspect -f": {Exit: 0, Stdout: "true\n"},
+		"exec attach":          {Exit: 0},
+	})
+
+	out, ok := runCSB(t, env, configDirFlag(cfgDir), "--workspace="+ws, "--runtime=docker", "--detachable", "--tty")
+	assert.True(t, ok, "csb --detachable exited non-zero; output:\n%s", out)
+	assert.Contains(t, out, "attaching to running session csb-proj-aabbcc")
+
+	calls := readDockerCalls(t, logFile)
+	assert.Nil(t, findCall(calls, "build"))
+	assert.Nil(t, findCall(calls, "run"), "auto-attach must not start a second container")
+	assert.NotNil(t, findCall(calls, "exec", "-it"), "expected docker exec attach")
+}
+
+// TestDetachableExplicitCommandStartsNew verifies that giving a command skips
+// auto-attach: the user wants a fresh container, not the running session.
+func TestDetachableExplicitCommandStartsNew(t *testing.T) {
+	ws := t.TempDir()
+	cfgDir := t.TempDir()
+	labels := fmt.Sprintf(`[{"Id":"abc123def456aaaaaaaaaaaa","Config":{"Labels":{"csb.workspace":%q,"csb.config-dir":%q}}}]`, ws, cfgDir)
+	logFile, env := injectDocker(t, mockDockerConfig{
+		"image inspect":        {Exit: 0},
+		"volume inspect":       {Exit: 0},
+		"network inspect":      {Exit: 1},
+		"ps":                   {Exit: 0, Stdout: "abc123def456\tcsb-proj-aabbcc\tUp 2 minutes\n"},
+		"container inspect":    {Exit: 0, Stdout: labels},
+		"run":                  {Exit: 0, Stdout: "fff111222333\n"},
+		"exec ready":           {Exit: 0},
+		"exec attach":          {Exit: 0},
+		"container inspect -f": {Exit: 0, Stdout: "true\n"},
+	})
+
+	out, ok := runCSB(t, env, configDirFlag(cfgDir), "--workspace="+ws, "--runtime=docker", "--detachable", "--tty", "--", "vim")
+	assert.True(t, ok, "csb exited non-zero; output:\n%s", out)
+	assert.NotNil(t, findCall(readDockerCalls(t, logFile), "run"), "expected a new container")
+}
+
+// TestDetachableSessionDiesBeforeReady verifies that a container which exits
+// before its tmux session comes up is reported as an error.
+func TestDetachableSessionDiesBeforeReady(t *testing.T) {
+	_, env := injectDocker(t, mockDockerConfig{
+		"image inspect":        {Exit: 0},
+		"volume inspect":       {Exit: 0},
+		"network inspect":      {Exit: 1},
+		"run":                  {Exit: 0, Stdout: "abc123def456\n"},
+		"exec ready":           {Exit: 1},
+		"container inspect -f": {Exit: 1},
+	})
+
+	out, ok := runCSB(t, env, configDirFlag(t.TempDir()), "--no-workspace", "--runtime=docker", "--detachable", "--tty")
+	assert.False(t, ok, "expected failure; output:\n%s", out)
+	assert.Contains(t, out, "exited before the session started")
+}
+
+// TestDetachableNeedsTTY verifies --detachable is rejected without a terminal.
+func TestDetachableNeedsTTY(t *testing.T) {
+	out, ok := runCSB(t, nil, configDirFlag(t.TempDir()), "--no-workspace", "--runtime=docker", "--detachable", "--no-tty")
+	assert.False(t, ok)
+	assert.Contains(t, out, "--detachable needs an interactive terminal")
 }

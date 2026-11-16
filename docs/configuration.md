@@ -64,6 +64,7 @@ the base list.
 | Option | Flag | Env | YAML key | Default | Notes |
 |---|---|---|---|---|---|
 | tmux | `--tmux` / `--no-tmux` | — | `tmux` | `false` | wrap the session in `tmux new-session -s main` |
+| detachable | `--detachable` / `--no-detachable` | — | `detachable` | `false` | keep the session running after tmux detach or terminal close; implies `tmux` and needs a TTY. See [Detachable sessions](cli.md#detachable-sessions) |
 | TTY | `--tty` / `--no-tty` | — | `tty` | auto-detect (is stdin a terminal) | passes `-t` to the runtime |
 | shell | `--shell NAME` | — | `default_shell` | `bash` | `$SHELL`, new tmux windows, and the default startup command |
 | startup command | — (positional/`--`) | — | `default_cmd` | `<shell> -l` | overridden by any command given on the CLI |

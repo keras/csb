@@ -3,6 +3,7 @@ package csb
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
 	"net"
@@ -433,6 +434,13 @@ func ResolveEnv(cfg *Config, rt *Runtime, brokerURL, brokerToken string) [][2]st
 		env = append(env, [2]string{"CSB_TMUX", "1"})
 	}
 
+	// CSB_DETACHABLE makes the login session's tmux snippet (csb-tmux.sh) start the
+	// tmux server detached and stay alive until the session ends, instead of
+	// exec'ing a tmux client that would take the container down on detach.
+	if cfg.Detachable {
+		env = append(env, [2]string{"CSB_DETACHABLE", "1"})
+	}
+
 	term := os.Getenv("TERM")
 	if term == "" {
 		term = "xterm-256color"
@@ -477,12 +485,51 @@ func ResolveEnv(cfg *Config, rt *Runtime, brokerURL, brokerToken string) [][2]st
 
 // ContainerLabels returns labels for the container.
 func ContainerLabels(cfg *Config) map[string]string {
-	return map[string]string{
+	labels := map[string]string{
 		"csb.managed":     "true",
 		"csb.home-volume": cfg.HomeVolume,
 		"csb.config-dir":  cfg.ConfigDir,
 	}
+	// Detachable sessions outlive the csb process, so `csb attach` finds them
+	// again through these labels.
+	if cfg.Detachable {
+		labels[LabelDetachable] = "true"
+		if cfg.Workspace != nil {
+			labels[LabelWorkspace] = *cfg.Workspace
+		}
+	}
+	return labels
 }
+
+// Container labels read back by session discovery (see Runtime.ListSessions).
+const (
+	LabelDetachable = "csb.detachable"
+	LabelWorkspace  = "csb.workspace"
+	LabelConfigDir  = "csb.config-dir"
+)
+
+// tmuxSessionName is the tmux session csb creates and attaches to.
+const tmuxSessionName = "main"
+
+// newSessionName returns a unique, runtime-safe container name for a detachable
+// session: csb-<workspace basename>-<6 hex>.
+func newSessionName(cfg *Config) string {
+	base := "session"
+	if cfg.Workspace != nil {
+		if b := sessionNameSafeRE.ReplaceAllString(filepath.Base(*cfg.Workspace), "-"); strings.Trim(b, "-.") != "" {
+			base = strings.Trim(b, "-.")
+		}
+	}
+	suffix := make([]byte, 3)
+	if _, err := rand.Read(suffix); err != nil {
+		// crypto/rand failing is effectively impossible; fall back to the pid so
+		// the name is still usable.
+		return fmt.Sprintf("csb-%s-%06x", base, os.Getpid()&0xffffff)
+	}
+	return fmt.Sprintf("csb-%s-%x", base, suffix)
+}
+
+var sessionNameSafeRE = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
 
 // VolumeLabels returns labels for the home volume.
 func VolumeLabels(cfg *Config) map[string]string {
@@ -522,7 +569,28 @@ func resolveContainerCmd(cfg *Config) []string {
 			postCommand = ""
 		}
 		quoted := shJoin(inner)
-		return []string{"tmux", "new-session", "-s", "main", quoted + "; " + postCommand}
+		if cfg.Detachable {
+			// The tmux *server* is the container's lifetime anchor: start the session
+			// detached, then wait for it to end. Clients come and go via
+			// `<runtime> exec ... tmux attach`, so detaching never stops the container.
+			// Exiting the last window ends the session, the loop returns, and --rm
+			// reaps the container.
+			//
+			// This shell is PID 1, and the kernel gives PID 1 no default signal
+			// actions: without a handler `docker stop` (SIGTERM) is ignored until the
+			// grace period expires and the runtime SIGKILLs everything. So trap TERM/
+			// INT/HUP to shut tmux down cleanly, and sleep via `wait` so a trapped
+			// signal interrupts the pause at once instead of after it.
+			return []string{
+				"sh", "-c",
+				`trap 'tmux kill-server 2>/dev/null; exit 0' TERM INT HUP; ` +
+					`tmux new-session -d -s ` + tmuxSessionName + ` "$1" && ` +
+					`while tmux has-session -t ` + tmuxSessionName + ` 2>/dev/null; do sleep 1 & wait $!; done`,
+				"csb-session",
+				quoted + "; " + postCommand,
+			}
+		}
+		return []string{"tmux", "new-session", "-s", tmuxSessionName, quoted + "; " + postCommand}
 	}
 
 	return inner
@@ -592,12 +660,27 @@ func BuildRunCommand(cfg *Config, mounts []Mount, env [][2]string, imageName str
 		cmd = append(cmd, "-t")
 	}
 	cmd = append(cmd, "--rm")
+	if cfg.Detachable {
+		// Start in the background; csb then attaches with `exec`. A fixed name lets
+		// the user (and `csb attach`) address the session afterwards.
+		if cfg.SessionName == "" {
+			cfg.SessionName = newSessionName(cfg)
+		}
+		cmd = append(cmd, "-d", "--name", cfg.SessionName)
+	}
 
-	// Container labels
+	// Container labels: the base three in a fixed order, then any extras sorted,
+	// so the command line is deterministic.
 	labels := ContainerLabels(cfg)
-	// Sort for determinism
 	labelKeys := []string{"csb.managed", "csb.home-volume", "csb.config-dir"}
-	for _, k := range labelKeys {
+	var extra []string
+	for k := range labels {
+		if k != "csb.managed" && k != "csb.home-volume" && k != "csb.config-dir" {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+	for _, k := range append(labelKeys, extra...) {
 		cmd = append(cmd, "--label", k+"="+labels[k])
 	}
 
