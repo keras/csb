@@ -1,0 +1,16 @@
+nix — Nix package manager (multi-user, flakes enabled)
+
+    nix shell nixpkgs#ripgrep        ripgrep in a temporary shell
+    nix run nixpkgs#hello            run a package without installing it
+    nix profile install nixpkgs#jq   install into your profile
+    nix profile list                 what's installed
+
+  Builds and downloads go through a root nix-daemon; you never need root.
+  The store (/nix) is on the `csb-nix` volume, shared by every sandbox that
+  enables this addon, so installs persist across csb runs. Your profile
+  (~/.nix-profile) lives in your home volume and points into that store.
+
+  Builds run without Nix's build sandbox (sandbox = false): an unprivileged
+  container can't provide the namespaces it needs.
+
+  Daemon log: /var/log/nix-daemon.log
