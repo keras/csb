@@ -10,8 +10,16 @@ RUN printf '\n[ -f /usr/share/bash-completion/bash_completion ] && . /usr/share/
 
 RUN mkdir -p /etc/csb/entrypoint.d /etc/csb/help.d
 
+# Addons install with build cache mounts: apt's package cache and lists plus
+# /var/cache/csb ($CSB_CACHE_DIR, for addons' own downloads) persist between
+# builds, so changing the addon list re-installs from local copies instead of
+# downloading everything again. The caches never land in the image. Needs
+# BuildKit (the docker default since 23.0) or podman/buildah.
 COPY csb/addon.d /tmp/addon.d
-RUN /tmp/addon.d/run.sh
+RUN --mount=type=cache,id=csb-apt-cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=csb-apt-lists,target=/var/lib/apt/lists,sharing=locked \
+    --mount=type=cache,id=csb-downloads,target=/var/cache/csb,sharing=locked \
+    /tmp/addon.d/run.sh
 
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 CSB_HOME=/home/sandbox
 

@@ -92,9 +92,19 @@ func parseAddonSpec(spec string) (name string, args []string) {
 // working dir, so it can reference sibling files by relative path. The
 // run_addon wrapper turns any failure into a message naming the offending addon
 // instead of an opaque "run.sh failed".
+//
+// The shipped Dockerfile runs it with BuildKit/buildah cache mounts on
+// /var/cache/apt, /var/lib/apt/lists and /var/cache/csb (CSB_CACHE_DIR, a
+// download cache for addons' own fetches), so packages and downloads survive
+// between builds without landing in the image. A user Dockerfile without those
+// mounts must still produce a clean image, so each cache is only kept when its
+// directory really is a mount; otherwise it is emptied at the end as before.
+// Debian's docker-clean apt hook deletes downloaded .debs after every dpkg run,
+// which would defeat the apt cache, so it is moved aside for the duration of the
+// script (and restored on exit) only when /var/cache/apt is mounted.
 func buildRunScript(instances []addonInstance) []byte {
 	var b strings.Builder
-	b.WriteString("#!/usr/bin/env bash\nset -euo pipefail\napt-get update\n\n")
+	b.WriteString(runScriptPrelude)
 	b.WriteString("run_addon() {\n")
 	b.WriteString("\tlocal name=$1 rc=0\n")
 	b.WriteString("\tshift\n")
@@ -113,9 +123,32 @@ func buildRunScript(instances []addonInstance) []byte {
 	for _, a := range instances {
 		fmt.Fprintf(&b, "echo %s >> /etc/csb/addons\n", shJoin([]string{a.Name}))
 	}
-	b.WriteString("rm -rf /tmp/addon.d /var/lib/apt/lists/*\n")
+	b.WriteString(runScriptEpilogue)
 	return []byte(b.String())
 }
+
+const runScriptPrelude = `#!/usr/bin/env bash
+set -euo pipefail
+
+# True when $1 is a mount point (a build cache mount from the Dockerfile).
+csb_is_mount() { awk -v p="$1" '$5 == p { f = 1 } END { exit !f }' /proc/self/mountinfo; }
+
+if csb_is_mount /var/cache/apt && [ -f /etc/apt/apt.conf.d/docker-clean ]; then
+	mv /etc/apt/apt.conf.d/docker-clean /tmp/csb-docker-clean
+	trap 'mv /tmp/csb-docker-clean /etc/apt/apt.conf.d/docker-clean' EXIT
+fi
+export CSB_CACHE_DIR=/var/cache/csb
+mkdir -p "$CSB_CACHE_DIR"
+
+apt-get update
+
+`
+
+const runScriptEpilogue = `rm -rf /tmp/addon.d
+csb_is_mount /var/lib/apt/lists || rm -rf /var/lib/apt/lists/*
+csb_is_mount /var/cache/apt || apt-get clean
+csb_is_mount "$CSB_CACHE_DIR" || rm -rf "$CSB_CACHE_DIR"
+`
 
 // addonInstances returns the enabled addons (name + install-script path +
 // args) in alphabetical order by name. Duplicate names and missing install

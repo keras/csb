@@ -39,14 +39,24 @@ _arch=$(dpkg --print-architecture)
 _deb="selkies-${SELKIES_VERSION}-debian${VERSION_CODENAME}-${_arch}.deb"
 _base_url="https://github.com/selkies-project/selkies/releases/download/${SELKIES_VERSION}"
 
+# The .deb is kept in the build's download cache ($CSB_CACHE_DIR) so rebuilds
+# skip the download; the checksum list is always fetched fresh and a cached
+# file that doesn't match it is downloaded again.
 _tmpdir=$(mktemp -d)
-curl -fsSL "$_base_url/$_deb" -o "$_tmpdir/$_deb"
+_cache="${CSB_CACHE_DIR:-$_tmpdir}/selkies"
+mkdir -p "$_cache"
 curl -fsSL "$_base_url/SHA256SUMS" -o "$_tmpdir/SHA256SUMS"
 # The release has no package signature, so its checksum list is the only
-# integrity check. --ignore-missing skips the other files it lists.
-( cd "$_tmpdir" && sha256sum --check --ignore-missing SHA256SUMS ) \
-    || { echo "selkies install: checksum mismatch for $_deb" >&2; exit 1; }
-apt-get install -y --no-install-recommends "$_tmpdir/$_deb"
+# integrity check. Only the line for our file is checked.
+_verify() {
+    awk -v d="$_deb" '$2 == d || $2 == "*" d' "$_tmpdir/SHA256SUMS" \
+        | ( cd "$_cache" && sha256sum --check --status - )
+}
+if ! _verify 2>/dev/null; then
+    curl -fsSL "$_base_url/$_deb" -o "$_cache/$_deb"
+    _verify || { echo "selkies install: checksum mismatch for $_deb" >&2; exit 1; }
+fi
+apt-get install -y --no-install-recommends "$_cache/$_deb"
 rm -rf "$_tmpdir"
 
 command -v selkies >/dev/null \

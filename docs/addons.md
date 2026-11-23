@@ -72,6 +72,21 @@ local-only addon, `~/.config/csb/addons/<name>/`) containing:
   /etc/csb/help.d/<name>`); csb doesn't place it for you. Once there, it's
   surfaced by `csb-help` inside the sandbox alongside the built-in topics.
 
+### Build caches
+
+The shipped Dockerfile runs the addon step with
+build cache mounts, so apt's downloaded packages and lists survive
+between builds: changing the addon list (say, one more package for
+`packages`) re-installs everything from local copies instead of
+downloading it all again. For downloads apt doesn't manage, use
+`$CSB_CACHE_DIR` (`/var/cache/csb`): it persists between builds the same
+way and is never part of the image. Key cached files by version and
+verify them before use, as `selkies` does with its release `.deb`. A
+Dockerfile without the mounts still works — the caches are then just
+emptied at the end of the step. The mounts need BuildKit (Docker's
+default since 23.0) or Podman; clear them with `docker builder prune` /
+`podman system prune --build`.
+
 ### `# csb:run-arg` directives
 
 Comment lines in the *leading comment block* of `install.sh` (scanning

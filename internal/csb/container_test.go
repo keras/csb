@@ -110,7 +110,8 @@ func TestAddonPaths_ReturnsPaths(t *testing.T) {
 func TestBuildRunScript_EmptyAddons(t *testing.T) {
 	script := string(buildRunScript(nil))
 	assert.Contains(t, script, "apt-get update")
-	assert.Contains(t, script, "rm -rf /tmp/addon.d /var/lib/apt/lists/*")
+	assert.Contains(t, script, "rm -rf /tmp/addon.d")
+	assert.Contains(t, script, "csb_is_mount /var/lib/apt/lists || rm -rf /var/lib/apt/lists/*")
 }
 
 func TestBuildRunScript_WithAddons(t *testing.T) {
